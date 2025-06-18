@@ -65,8 +65,7 @@ def diagnosticar_rule_based(df_results_table):
     freq_reposo = get_mean_frequency('Reposo')
     amp_postural = get_max_amplitude('Postural')
     freq_postural = get_mean_frequency('Postural')
-    amp_accion = get_max_amplitude('Acción')
-    freq_accion = get_mean_frequency('Acción')
+    amp_accion = get_mean_frequency('Acción') # Corregido: Debe ser frecuencia, no amplitud
 
     # Reglas de diagnóstico
     # Parkinson: temblor en reposo > 0.3 cm y frecuencia entre 3-6.5 Hz
@@ -93,31 +92,31 @@ if opcion == "1️⃣ Análisis de una medición":
     st.title("📈 Análisis de una medición")
 
     st.markdown('<div class="prueba-titulo">Subir archivo CSV para prueba en REPOSO</div>', unsafe_allow_html=True)
-    reposo_file = st.file_uploader("", type=["csv"], key="reposo")
+    reposo_file = st.file_uploader("Arrastrar archivo aquí", type=["csv"], key="reposo") # Cambiado el label
 
     st.markdown('<div class="prueba-titulo">Subir archivo CSV para prueba POSTURAL</div>', unsafe_allow_html=True)
-    postural_file = st.file_uploader("", type=["csv"], key="postural")
+    postural_file = st.file_uploader("Arrastrar archivo aquí", type=["csv"], key="postural") # Cambiado el label
 
     st.markdown('<div class="prueba-titulo">Subir archivo CSV para prueba en ACCIÓN</div>', unsafe_allow_html=True)
-    accion_file = st.file_uploader("", type=["csv"], key="accion")
+    accion_file = st.file_uploader("Arrastrar archivo aquí", type=["csv"], key="accion") # Cambiado el label
 
     # Estilos CSS personalizados para los uploaders en esta sección
     st.markdown("""
         <style>
-        div[data-testid="stFileUploaderDropzoneInstructions"] span {
+        /* Oculta el texto 'Limit 200MB per file • CSV' */
+        div[data-testid="stFileUploaderDropzoneInstructions"] p:nth-child(2) {
             display: none !important;
         }
-        div[data-testid="stFileUploaderDropzoneInstructions"]::before {
-            content: "Arrastrar archivo aquí";
-            font-weight: bold;
-            font-size: 16px;
-            color: #444;
-            display: block;
-            margin-bottom: 0.5rem;
+        /* Alinea el "Arrastrar archivo aquí" a la derecha, ya que ahora es el label */
+        div[data-testid="stFileUploaderDropzoneInstructions"] {
+            text-align: right;
         }
+
+        /* Oculta el botón por defecto de Streamlit */
         div[data-testid="stFileUploader"] button[kind="secondary"] {
             visibility: hidden;
         }
+        /* Muestra y estiliza el botón personalizado */
         div[data-testid="stFileUploader"] button[kind="secondary"]::before {
             float: right;
             margin-right: 0;
@@ -131,16 +130,16 @@ if opcion == "1️⃣ Análisis de una medición":
             border: 2px solid white;
             cursor: pointer;
         }
-        /* Alinea todo a la derecha */
+        /* Ajusta la alineación del contenedor del uploader para que el botón esté a la derecha */
         div[data-testid="stFileUploader"] > div:first-child {
             display: flex;
-            justify-content: flex-end;
-            align-items: center;
+            flex-direction: column; /* Cambiado a columna para el label y luego el botón */
+            align-items: flex-end; /* Alinea los elementos a la derecha */
         }
         div[data-testid="stFileUploader"] > div {
             display: flex;
-            justify-content: flex-end;
-            align-items: center;
+            flex-direction: column; /* Asegura que el dropzone y el botón estén en columna */
+            align-items: flex-end; /* Alinea el contenido a la derecha */
         }
         </style>
     """, unsafe_allow_html=True)
@@ -167,7 +166,7 @@ if opcion == "1️⃣ Análisis de una medición":
                 if not df_raw_val.empty:
                     first_df_raw = df_raw_val
                     break
-            
+
             if first_df_raw is not None:
                 patient_data_for_report = extract_patient_data(first_df_raw)
             else:
@@ -193,7 +192,7 @@ if opcion == "1️⃣ Análisis de una medición":
                         result_row = df_promedio.iloc[0].to_dict()
                         result_row['Test'] = test_type
                         results_single_analysis.append(result_row)
-                    
+
                     if not df_ventanas.empty:
                         df_ventanas_copy = df_ventanas.copy()
                         df_ventanas_copy["Test"] = test_type
@@ -210,7 +209,7 @@ if opcion == "1️⃣ Análisis de una medición":
                         df_to_plot = df_plot.iloc[:min_ventanas_count].copy()
                     else:
                         df_to_plot = df_plot.copy()
-                    
+
                     df_to_plot["Tiempo (segundos)"] = df_to_plot["Ventana"] * VENTANA_DURACION_SEG * (1 - SOLAPAMIENTO_VENTANA)
                     ax.plot(df_to_plot["Tiempo (segundos)"], df_to_plot["Amplitud Temblor (cm)"], label=f"{test_name}")
 
@@ -224,11 +223,11 @@ if opcion == "1️⃣ Análisis de una medición":
 
             else:
                 st.warning("No se generaron datos de ventanas para el gráfico.")
-            
+
             if results_single_analysis:
                 df_results_final = pd.DataFrame(results_single_analysis)
                 df_results_final_display = df_results_final.set_index('Test') # For display
-                
+
                 diagnostico_auto = diagnosticar_rule_based(df_results_final)
 
                 st.subheader("Resultados del Análisis de Temblor")
@@ -242,7 +241,7 @@ if opcion == "1️⃣ Análisis de una medición":
                     figures=figures_for_report,
                     conclusion_text=f"Diagnóstico automático: {diagnostico_auto}"
                 )
-                
+
                 st.download_button("📄 Descargar informe PDF", pdf_output_bytes.getvalue(), file_name="informe_temblor.pdf", mime="application/pdf")
                 st.info("El archivo se descargará en tu carpeta de descargas predeterminada o el navegador te pedirá la ubicación.")
             else:
@@ -255,35 +254,35 @@ elif opcion == "2️⃣ Comparar dos mediciones":
 
     st.markdown("### Cargar archivos de la **medición 1**")
     config1_archivos_raw = {
-        "Reposo": st.file_uploader("Archivo de REPOSO medición 1", type="csv", key="reposo1"),
-        "Postural": st.file_uploader("Archivo de POSTURAL medición 1", type="csv", key="postural1"),
-        "Acción": st.file_uploader("Archivo de ACCION medición 1", type="csv", key="accion1")
+        "Reposo": st.file_uploader("Arrastrar archivo aquí", type="csv", key="reposo1"), # Cambiado el label
+        "Postural": st.file_uploader("Arrastrar archivo aquí", type="csv", key="postural1"), # Cambiado el label
+        "Acción": st.file_uploader("Arrastrar archivo aquí", type="csv", key="accion1") # Cambiado el label
     }
 
     st.markdown("### Cargar archivos de la **medición 2**")
     config2_archivos_raw = {
-        "Reposo": st.file_uploader("Archivo de REPOSO medición 2", type="csv", key="reposo2"),
-        "Postural": st.file_uploader("Archivo de POSTURAL medición 2", type="csv", key="postural2"),
-        "Acción": st.file_uploader("Archivo de ACCION medición 2", type="csv", key="accion2")
+        "Reposo": st.file_uploader("Arrastrar archivo aquí", type="csv", key="reposo2"), # Cambiado el label
+        "Postural": st.file_uploader("Arrastrar archivo aquí", type="csv", key="postural2"), # Cambiado el label
+        "Acción": st.file_uploader("Arrastrar archivo aquí", type="csv", key="accion2") # Cambiado el label
     }
 
     # Estilos CSS personalizados para los uploaders en esta sección
     st.markdown("""
         <style>
-        div[data-testid="stFileUploaderDropzoneInstructions"] span {
+        /* Oculta el texto 'Limit 200MB per file • CSV' */
+        div[data-testid="stFileUploaderDropzoneInstructions"] p:nth-child(2) {
             display: none !important;
         }
-        div[data-testid="stFileUploaderDropzoneInstructions"]::before {
-            content: "Arrastrar archivo aquí";
-            font-weight: bold;
-            font-size: 16px;
-            color: #444;
-            display: block;
-            margin-bottom: 0.5rem;
+        /* Alinea el "Arrastrar archivo aquí" a la derecha, ya que ahora es el label */
+        div[data-testid="stFileUploaderDropzoneInstructions"] {
+            text-align: right;
         }
+
+        /* Oculta el botón por defecto de Streamlit */
         div[data-testid="stFileUploader"] button[kind="secondary"] {
             visibility: hidden;
         }
+        /* Muestra y estiliza el botón personalizado */
         div[data-testid="stFileUploader"] button[kind="secondary"]::before {
             float: right;
             margin-right: 0;
@@ -297,16 +296,16 @@ elif opcion == "2️⃣ Comparar dos mediciones":
             border: 2px solid white;
             cursor: pointer;
         }
-        /* Alinea todo a la derecha */
+        /* Ajusta la alineación del contenedor del uploader para que el botón esté a la derecha */
         div[data-testid="stFileUploader"] > div:first-child {
             display: flex;
-            justify-content: flex-end;
-            align-items: center;
+            flex-direction: column;
+            align-items: flex-end;
         }
         div[data-testid="stFileUploader"] > div {
             display: flex;
-            justify-content: flex-end;
-            align-items: center;
+            flex-direction: column;
+            align-items: flex-end;
         }
         </style>
     """, unsafe_allow_html=True)
@@ -326,7 +325,7 @@ elif opcion == "2️⃣ Comparar dos mediciones":
         else:
             # Extraer datos del paciente del primer archivo válido de la Configuración 1
             patient_data_for_report = extract_patient_data(config1_loaded_dfs["Reposo"])
-            
+
             results_config1 = []
             results_config2 = []
             figures_for_report = []
@@ -344,7 +343,7 @@ elif opcion == "2️⃣ Comparar dos mediciones":
                         results_config1.append(result_row1)
                 else:
                     st.warning(f"No hay datos válidos en el archivo {test_type} de Medición 1 después de la limpieza.")
-                    
+
                 # Medición 2
                 cleaned_df2 = clean_sensor_data(config2_loaded_dfs[test_type])
                 if not cleaned_df2.empty:
@@ -359,7 +358,7 @@ elif opcion == "2️⃣ Comparar dos mediciones":
                 # Gráfico comparativo por test
                 if not cleaned_df1.empty and not cleaned_df2.empty and not df1_ventanas.empty and not df2_ventanas.empty:
                     fig, ax = plt.subplots(figsize=(10, 5))
-                    
+
                     df1_ventanas["Tiempo (segundos)"] = df1_ventanas["Ventana"] * VENTANA_DURACION_SEG * (1 - SOLAPAMIENTO_VENTANA)
                     df2_ventanas["Tiempo (segundos)"] = df2_ventanas["Ventana"] * VENTANA_DURACION_SEG * (1 - SOLAPAMIENTO_VENTANA)
 
@@ -367,7 +366,7 @@ elif opcion == "2️⃣ Comparar dos mediciones":
                     min_len = min(len(df1_ventanas), len(df2_ventanas))
                     ax.plot(df1_ventanas["Tiempo (segundos)"].iloc[:min_len], df1_ventanas["Amplitud Temblor (cm)"].iloc[:min_len], label="Medición 1", color="blue")
                     ax.plot(df2_ventanas["Tiempo (segundos)"].iloc[:min_len], df2_ventanas["Amplitud Temblor (cm)"].iloc[:min_len], label="Medición 2", color="orange")
-                    
+
                     ax.set_title(f"Amplitud por Ventana - {test_type}")
                     ax.set_xlabel("Tiempo (segundos)")
                     ax.set_ylabel("Amplitud (cm)")
@@ -390,7 +389,7 @@ elif opcion == "2️⃣ Comparar dos mediciones":
 
                 amp_avg_config1 = df_results_config1['Amplitud Temblor (cm)'].mean()
                 amp_avg_config2 = df_results_config2['Amplitud Temblor (cm)'].mean()
-                
+
                 conclusion_text = ""
                 if amp_avg_config1 < amp_avg_config2:
                     conclusion_text = (
@@ -435,27 +434,27 @@ elif opcion == "3️⃣ Predicción de Temblor":
     st.title("🔮 Predicción de Temblor")
     st.markdown("### Cargar archivos CSV para la Predicción")
 
-    prediccion_reposo_file = st.file_uploader("Archivo de REPOSO para Predicción", type="csv", key="prediccion_reposo")
-    prediccion_postural_file = st.file_uploader("Archivo de POSTURAL para Predicción", type="csv", key="prediccion_postural")
-    prediccion_accion_file = st.file_uploader("Archivo de ACCION para Predicción", type="csv", key="prediccion_accion")
+    prediccion_reposo_file = st.file_uploader("Arrastrar archivo aquí", type="csv", key="prediccion_reposo") # Cambiado el label
+    prediccion_postural_file = st.file_uploader("Arrastrar archivo aquí", type="csv", key="prediccion_postural") # Cambiado el label
+    prediccion_accion_file = st.file_uploader("Arrastrar archivo aquí", type="csv", key="prediccion_accion") # Cambiado el label
 
     # Estilos CSS personalizados para los uploaders en esta sección
     st.markdown("""
         <style>
-        div[data-testid="stFileUploaderDropzoneInstructions"] span {
+        /* Oculta el texto 'Limit 200MB per file • CSV' */
+        div[data-testid="stFileUploaderDropzoneInstructions"] p:nth-child(2) {
             display: none !important;
         }
-        div[data-testid="stFileUploaderDropzoneInstructions"]::before {
-            content: "Arrastrar archivo aquí";
-            font-weight: bold;
-            font-size: 16px;
-            color: #444;
-            display: block;
-            margin-bottom: 0.5rem;
+        /* Alinea el "Arrastrar archivo aquí" a la derecha, ya que ahora es el label */
+        div[data-testid="stFileUploaderDropzoneInstructions"] {
+            text-align: right;
         }
+
+        /* Oculta el botón por defecto de Streamlit */
         div[data-testid="stFileUploader"] button[kind="secondary"] {
             visibility: hidden;
         }
+        /* Muestra y estiliza el botón personalizado */
         div[data-testid="stFileUploader"] button[kind="secondary"]::before {
             float: right;
             margin-right: 0;
@@ -469,16 +468,16 @@ elif opcion == "3️⃣ Predicción de Temblor":
             border: 2px solid white;
             cursor: pointer;
         }
-        /* Alinea todo a la derecha */
+        /* Ajusta la alineación del contenedor del uploader para que el botón esté a la derecha */
         div[data-testid="stFileUploader"] > div:first-child {
             display: flex;
-            justify-content: flex-end;
-            align-items: center;
+            flex-direction: column;
+            align-items: flex-end;
         }
         div[data-testid="stFileUploader"] > div {
             display: flex;
-            justify-content: flex-end;
-            align-items: center;
+            flex-direction: column;
+            align-items: flex-end;
         }
         </style>
     """, unsafe_allow_html=True)
@@ -504,7 +503,7 @@ elif opcion == "3️⃣ Predicción de Temblor":
                     # Extraer datos del paciente una sola vez del primer archivo válido
                     if not patient_data:
                         patient_data = extract_patient_data(raw_df)
-                    
+
                     # Limpiar datos del sensor
                     cleaned_df = clean_sensor_data(raw_df)
                     if cleaned_df.empty:
@@ -524,7 +523,7 @@ elif opcion == "3️⃣ Predicción de Temblor":
                         avg_tremor_metrics[test_type] = {
                             'Frecuencia Dominante (Hz)': np.nan, 'RMS (m/s2)': np.nan, 'Amplitud Temblor (cm)': np.nan
                         }
-                    
+
                     # Preparar datos para el gráfico de amplitud por ventana
                     if not df_ventanas.empty:
                         df_ventanas_copy = df_ventanas.copy()
@@ -577,7 +576,7 @@ elif opcion == "3️⃣ Predicción de Temblor":
                             st.info("El modelo no tiene el atributo 'classes_'. No se pueden mostrar las etiquetas de clase para las probabilidades.")
                 else:
                     st.error("No se pudo obtener una predicción del modelo.")
-            
+
             # Generar el gráfico de amplitud por ventana para la predicción
             if figures_for_report:
                 # Encontrar la longitud mínima para graficar
@@ -585,7 +584,7 @@ elif opcion == "3️⃣ Predicción de Temblor":
                 for _, df_win in figures_for_report:
                     if len(df_win) < min_plot_len:
                         min_plot_len = len(df_win)
-                
+
                 plot_figs = []
                 st.subheader("Amplitud de Temblor por Ventana (Archivos de Predicción)")
                 for test_type, df_plot in figures_for_report:
@@ -600,7 +599,7 @@ elif opcion == "3️⃣ Predicción de Temblor":
                     ax.grid(True)
                     st.pyplot(fig)
                     plot_figs.append(fig) # Añadir la figura generada para el informe PDF
-                
+
                 # Generar PDF de predicción (podría ser una función diferente en pdf_generation)
                 pdf_output_bytes = generate_tremor_report_pdf(
                     patient_data,
