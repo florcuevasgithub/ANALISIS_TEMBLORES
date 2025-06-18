@@ -1,0 +1,10 @@
+streamlit
+pandas
+numpy
+matplotlib
+scipy
+fpdf
+ahrs
+joblib
+reportlab
+scikit-learn==1.6.1
