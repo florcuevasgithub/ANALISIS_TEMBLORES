@@ -1,163 +1,122 @@
 # signal_analysis.py
-
 import pandas as pd
 import numpy as np
 from scipy.signal import butter, filtfilt, welch
 from ahrs.filters import Mahony
-import streamlit as st # Necesario para st.warning en caso de problemas
-from config import FS, VENTANA_DURACION_SEG, SOLAPAMIENTO_VENTANA, TREMOR_FILTER_BAND, FILTER_ORDER, SENSOR_COLS
 
-def filter_tremor_signal(signal):
-    """
-    Aplica un filtro Butterworth pasabanda a la señal de temblor.
-    """
-    nyquist = 0.5 * FS
-    low_cut = TREMOR_FILTER_BAND[0] / nyquist
-    high_cut = TREMOR_FILTER_BAND[1] / nyquist
+# Import the global configuration
+from config import VENTANA_DURACION_SEG
 
-    # Diseño del filtro
-    b, a = butter(N=FILTER_ORDER, Wn=[low_cut, high_cut], btype='band')
-
-    # Aplicación del filtro sin desfase
-    return filtfilt(b, a, signal)
-
-def quaternion_to_rotation_matrix(q):
-    """
-    Convierte un cuaternión a una matriz de rotación 3x3.
-    """
+def q_to_matrix(q):
     w, x, y, z = q
     return np.array([
-        [1 - 2*(y**2 + z**2),          2*(x*y - z*w),          2*(x*z + y*w)],
-        [2*(x*y + z*w),          1 - 2*(x**2 + z**2),        2*(y*z - x*w)],
-        [2*(x*z - y*w),          2*(y*z + x*w),          1 - 2*(x**2 + y**2)]
+        [1 - 2*(y**2 + z**2),         2*(x*y - z*w),           2*(x*z + y*w)],
+        [2*(x*y + z*w),               1 - 2*(x**2 + z**2),       2*(y*z - x*w)],
+        [2*(x*z - y*w),               2*(y*z + x*w),           1 - 2*(x**2 + y**2)]
     ])
 
-def analyze_tremor_windows(df_sensor_data):
-    """
-    Realiza el análisis de temblor por ventanas, incluyendo compensación de gravedad
-    y cálculo de métricas (frecuencia, RMS, amplitud).
-    """
-    if df_sensor_data.empty:
-        st.warning("DataFrame de entrada vacío para análisis de temblor.")
+def filtrar_temblor(signal, fs=100):
+    b, a = butter(N=4, Wn=[1, 15], btype='bandpass', fs=fs)
+    return filtfilt(b, a, signal)
+
+def analizar_temblor_por_ventanas_resultante(df, fs=100, ventana_seg=VENTANA_DURACION_SEG):
+    required_cols = ['Acel_X', 'Acel_Y', 'Acel_Z', 'GiroX', 'GiroY', 'GiroZ']
+    # Ensure all required columns exist and drop NaNs only from these specific columns for AHRS
+    df_filtered = df[required_cols].dropna() 
+
+    if df_filtered.empty:
+        return pd.DataFrame(), pd.DataFrame() # Return empty if no valid data after dropping NaNs
+
+    acc = df_filtered[['Acel_X', 'Acel_Y', 'Acel_Z']].to_numpy()
+    gyr = np.radians(df_filtered[['GiroX', 'GiroY', 'GiroZ']].to_numpy())
+    
+    # Mahony filter requires at least 2 data points for quaternion calculation in some cases
+    if len(acc) < 2: 
         return pd.DataFrame(), pd.DataFrame()
 
-    # Asegurarse de que las columnas del sensor realmente existen y tienen datos
-    current_sensor_cols = [col for col in SENSOR_COLS if col in df_sensor_data.columns and df_sensor_data[col].notna().any()]
-
-    if not current_sensor_cols:
-        st.warning("No se encontraron columnas de sensor válidas para el análisis de temblor.")
-        return pd.DataFrame(), pd.DataFrame()
-
-    # Extraer datos de acelerómetro y giroscopio
-    # Asegúrate de que las columnas para acc y gyr existen antes de intentar acceder a ellas
-    acc_cols = [col for col in ['Acel_X', 'Acel_Y', 'Acel_Z'] if col in current_sensor_cols]
-    gyr_cols = [col for col in ['GiroX', 'GiroY', 'GiroZ'] if col in current_sensor_cols]
-
-    if not acc_cols or not gyr_cols:
-        st.warning("Datos insuficientes de acelerómetro o giroscopio para el filtro Mahony.")
-        return pd.DataFrame(), pd.DataFrame()
-
-    acc = df_sensor_data[acc_cols].to_numpy()
-    gyr = np.radians(df_sensor_data[gyr_cols].to_numpy())
-
-    # --- Compensación de Gravedad con Mahony ---
-    mahony = Mahony(gyr=gyr, acc=acc, frequency=FS)
+    mahony = Mahony(gyr=gyr, acc=acc, frequency=fs)
     Q = mahony.Q
-
+    
     linear_accelerations_magnitude = []
-    g_world_vector = np.array([0.0, 0.0, 9.81]) # Vector de gravedad en el marco global
+    g_world_vector = np.array([0.0, 0.0, 9.81])
 
     for i in range(len(acc)):
+        if i >= len(Q): # Safety check if Q is shorter than acc due to internal AHRS handling
+            break
         q = Q[i]
         acc_measured = acc[i]
-        R_W_B = quaternion_to_rotation_matrix(q) # Matriz de rotación del mundo al cuerpo
-
-        # Rotar el vector de gravedad del mundo al marco del sensor
+        R_W_B = q_to_matrix(q)
         gravity_in_sensor_frame = R_W_B @ g_world_vector
-
-        # Aceleración lineal = Aceleración medida - Aceleración de la gravedad
         linear_acc_sensor_frame = acc_measured - gravity_in_sensor_frame
-
         linear_accelerations_magnitude.append(np.linalg.norm(linear_acc_sensor_frame))
 
     movimiento_lineal = np.array(linear_accelerations_magnitude)
-    señal_filtrada = filter_tremor_signal(movimiento_lineal) # Usa la función de filtrado
-
-    # --- Análisis por Ventanas ---
-    resultados_por_ventana = []
-
-    window_samples = int(FS * VENTANA_DURACION_SEG)
-    overlap_samples = int(window_samples * SOLAPAMIENTO_VENTANA)
-    step_samples = window_samples - overlap_samples
-
-    if step_samples <= 0 or len(señal_filtrada) < window_samples:
-        st.warning("Parámetros de ventana inválidos o datos insuficientes para formar ventanas.")
+    
+    if len(movimiento_lineal) < 1: # Ensure there's enough data after gravity removal
         return pd.DataFrame(), pd.DataFrame()
 
-    num_windows = (len(señal_filtrada) - window_samples) // step_samples + 1
+    señal_filtrada = filtrar_temblor(movimiento_lineal, fs)
 
-    for i in range(num_windows):
-        start = i * step_samples
-        end = start + window_samples
-        window = señal_filtrada[start:end]
+    resultados_por_ventana = []
+    tamaño_ventana = int(fs * ventana_seg)
+    
+    if len(señal_filtrada) < tamaño_ventana:
+        # Not enough data for even one full window, return empty
+        return pd.DataFrame(), pd.DataFrame()
 
-        if len(window) < window_samples:
-            continue # Skip incomplete windows
+    num_ventanas = len(señal_filtrada) // tamaño_ventana
 
-        # Asegurarse de que el segmento tenga varianza para FFT
-        if np.var(window) < 1e-9: # Umbral pequeño para detectar señal casi constante
-            freq_dominante = np.nan
-            rms = 0.0
-            amp_g = 0.0
-            amp_cm = 0.0
+    for i in range(num_ventanas):
+        segmento = señal_filtrada[i*tamaño_ventana:(i+1)*tamaño_ventana]
+        segmento = segmento - np.mean(segmento) # Detrend segment
+
+        # Avoid Welch calculation on empty or too short segments
+        if len(segmento) < 1:
+            continue
+
+        # nperseg must be less than or equal to the segment length
+        nperseg_val = min(tamaño_ventana, len(segmento))
+        if nperseg_val == 0:
+            freq_dominante = 0.0
+            Pxx_max = 0.0
         else:
-            # Eliminar la media para el análisis de frecuencia (señal de CA)
-            segmento_dc_removed = window - np.mean(window)
-
-            # Espectro de Potencia (PSD)
-            f, Pxx = welch(segmento_dc_removed, fs=FS, nperseg=window_samples, scaling='density')
-
-            # Filtrar solo el rango de temblor (ej. 3-12 Hz) para buscar la frecuencia dominante
-            tremor_freq_range_mask = (f >= 3) & (f <= 12)
-            f_tremor = f[tremor_freq_range_mask]
-            Pxx_tremor = Pxx[tremor_freq_range_mask]
-
-            if len(Pxx_tremor) > 0:
-                idx_max_psd = np.argmax(Pxx_tremor)
-                freq_dominante = f_tremor[idx_max_psd]
+            f, Pxx = welch(segmento, fs=fs, nperseg=nperseg_val)
+            if len(Pxx) > 0:
+                freq_dominante = f[np.argmax(Pxx)]
+                Pxx_max = np.max(Pxx)
             else:
-                freq_dominante = np.nan # No se encontró frecuencia dominante en el rango de temblor
+                freq_dominante = 0.0
+                Pxx_max = 0.0
 
-            # Cálculo de RMS y Amplitud
-            rms = np.sqrt(np.mean(window**2)) # RMS de la señal original en la ventana
-            amp_g = (np.max(window) - np.min(window))/2 # Amplitud pico a pico / 2
 
-            # Conversión de aceleración (g) a desplazamiento (cm)
-            if pd.notna(freq_dominante) and freq_dominante > 1.5: # Evitar división por cero o por frecuencias muy bajas
-                # Fórmula A = a / (2 * pi * f)^2. Multiplicar por 100 para cm.
-                # Se multiplica por 2 porque amp_g es 'pico' y la fórmula suele ser para RMS, o para ajustar
-                # entre diferentes definiciones de amplitud. Tu código original lo tenía, se mantiene.
-                amp_cm = (amp_g * 100) / ((2 * np.pi * freq_dominante) ** 2) * 2
-            else:
-                amp_cm = np.nan # No se puede calcular si la frecuencia dominante no es válida o muy baja
+        varianza = np.var(segmento)
+        rms = np.sqrt(np.mean(segmento**2))
+        amp_g = (np.max(segmento) - np.min(segmento))/2
+
+        if freq_dominante > 1.5: # Apply amplitude calculation only if dominant freq is meaningful
+            amp_cm = ((amp_g * 100) / ((2 * np.pi * freq_dominante) ** 2))*2
+        else:
+            amp_cm = 0.0
 
         resultados_por_ventana.append({
-           'Ventana': i + 1, # Empezar desde 1 para legibilidad
+           'Ventana': i,
            'Frecuencia Dominante (Hz)': freq_dominante,
            'RMS (m/s2)': rms,
-           'Amplitud Temblor (g)': amp_g, # Mantenemos esta para trazabilidad si es útil
+           'Amplitud Temblor (g)': amp_g,
            'Amplitud Temblor (cm)': amp_cm
          })
 
     df_por_ventana = pd.DataFrame(resultados_por_ventana)
 
     if not df_por_ventana.empty:
-        # Excluir 'Amplitud Temblor (g)' de este promedio si no se usa para la predicción
-        promedio = df_por_ventana[['Frecuencia Dominante (Hz)', 'RMS (m/s2)', 'Amplitud Temblor (cm)']].mean(numeric_only=True).to_dict()
+        # Ensure 'Ventana' is not included in numeric_only mean for the average calculation if it's not a numeric metric
+        # Remove 'Ventana' from columns before calculating mean if it's just an index
+        cols_for_mean = [col for col in df_por_ventana.columns if col not in ['Ventana', 'Amplitud Temblor (g)']]
+        promedio = df_por_ventana[cols_for_mean].mean().to_dict()
         df_promedio = pd.DataFrame([{
-            'Frecuencia Dominante (Hz)': promedio.get('Frecuencia Dominante (Hz)', np.nan),
-            'RMS (m/s2)': promedio.get('RMS (m/s2)', np.nan),
-            'Amplitud Temblor (cm)': promedio.get('Amplitud Temblor (cm)', np.nan)
+            'Frecuencia Dominante (Hz)': promedio.get('Frecuencia Dominante (Hz)', 0.0),
+            'RMS (m/s2)': promedio.get('RMS (m/s2)', 0.0),
+            'Amplitud Temblor (cm)': promedio.get('Amplitud Temblor (cm)', 0.0)
         }])
     else:
         df_promedio = pd.DataFrame()
