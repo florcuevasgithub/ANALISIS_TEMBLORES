@@ -59,10 +59,6 @@ st.markdown("""
 
 def manejar_reinicio():
     if st.session_state.get("reiniciar", False):
-        # In a deployed Streamlit app, you typically don't remove files
-        # from the disk where the app is running. This section is more
-        # relevant for local development if you create temporary files.
-        # For a clean reset, clearing session_state and rerunning is key.
         st.session_state.clear()
         st.experimental_rerun()
 
@@ -115,10 +111,10 @@ if opcion == "1️⃣ Análisis de una medición":
 
     # Inicializa estas variables FUERA del bloque del botón.
     resultados_globales = []
-    datos_paciente_para_pdf = {} # Cambiado a diccionario para datos del paciente
+    datos_paciente_para_pdf = {}
     ventanas_para_grafico = []
     min_ventanas_count = float('inf')
-    fig = None  
+    fig_single_analysis = None # Cambiado el nombre de la variable para evitar conflictos
 
     if st.button("Iniciar análisis"):
         mediciones_tests = {}
@@ -159,7 +155,7 @@ if opcion == "1️⃣ Análisis de una medición":
 
 
             if ventanas_para_grafico:
-                fig, ax = plt.subplots(figsize=(10, 6))
+                fig_single_analysis, ax = plt.subplots(figsize=(10, 6)) # Asigna a la variable específica
                 for df in ventanas_para_grafico:
                     test_name = df["Test"].iloc[0]
                     if min_ventanas_count != float('inf') and len(df) > min_ventanas_count:
@@ -175,7 +171,7 @@ if opcion == "1️⃣ Análisis de una medición":
                 ax.set_ylabel("Amplitud (cm)")
                 ax.legend()
                 ax.grid(True)
-                st.pyplot(fig)
+                st.pyplot(fig_single_analysis) # Muestra la variable específica
             else:
                 st.warning("No se generaron datos de ventanas para el gráfico.")
 
@@ -187,11 +183,14 @@ if opcion == "1️⃣ Análisis de una medición":
                 st.dataframe(df_resultados_final.set_index('Test'))
 
                 generar_pdf(
-                    datos_paciente_para_pdf, 
+                    datos_paciente_para_pdf,
                     df_resultados_final,
                     nombre_archivo="informe_temblor.pdf",
                     diagnostico=diagnostico_auto,
-                    fig=fig
+                    figs=fig_single_analysis, # Pasa la variable específica (puede ser None o una figura)
+                    comparison_mode=False,
+                    config1_params=None, # No aplicable para análisis único
+                    config2_params=None # No aplicable para análisis único
                 )
 
                 with open("informe_temblor.pdf", "rb") as f:
@@ -258,7 +257,6 @@ elif opcion == "2️⃣ Comparar dos mediciones":
         return pd.DataFrame(resultados)
 
     if st.button("Comparar Mediciones"):
-        # Check if at least one file is uploaded for each test type across both configurations
         any_files_uploaded_config1 = any(f is not None for f in config1_archivos.values())
         any_files_uploaded_config2 = any(f is not None for f in config2_archivos.values())
         
@@ -280,28 +278,24 @@ elif opcion == "2️⃣ Comparar dos mediciones":
                     df_config2_meta = pd.read_csv(f, encoding='latin1')
                     break
             
-            # Extract patient data from the first available DF (assuming consistency)
             datos_personales = {}
             if df_config1_meta is not None:
                 datos_personales = extraer_datos_paciente(df_config1_meta)
             elif df_config2_meta is not None:
-                datos_personales = extraer_datos_paciente(df_config2_meta) # Fallback if only config2 is uploaded initially
+                datos_personales = extraer_datos_paciente(df_config2_meta)
 
             parametros_config1 = {}
             if df_config1_meta is not None:
-                parametros_config1 = extraer_datos_paciente(df_config1_meta) # Re-use for config params
+                parametros_config1 = extraer_datos_paciente(df_config1_meta)
 
             parametros_config2 = {}
             if df_config2_meta is not None:
-                parametros_config2 = extraer_datos_paciente(df_config2_meta) # Re-use for config params
+                parametros_config2 = extraer_datos_paciente(df_config2_meta)
 
 
             df_resultados_config1 = analizar_configuracion_comparacion(config1_archivos)
             df_resultados_config2 = analizar_configuracion_comparacion(config2_archivos)
 
-            # Combine results for PDF generation if needed, or pass separately
-            # For PDF, let's keep them separate but make the PDF generation flexible.
-            
             amp_avg_config1 = df_resultados_config1['Amplitud Temblor (cm)'].mean() if not df_resultados_config1.empty else 0
             amp_avg_config2 = df_resultados_config2['Amplitud Temblor (cm)'].mean() if not df_resultados_config2.empty else 0
 
@@ -331,9 +325,10 @@ elif opcion == "2️⃣ Comparar dos mediciones":
             st.dataframe(df_resultados_config2)
 
             st.subheader("Comparación Gráfica de Amplitud por Ventana")
-            nombres_test = ["Reposo", "Postural", "Acción"] # Ensure 'Postural' is handled
-
-            pdf_figs = [] # List to store figure paths for PDF
+            nombres_test = ["Reposo", "Postural", "Acción"]
+            
+            # Lista para almacenar todas las figuras para el PDF
+            figs_comparison = []
 
             for test in nombres_test:
                 archivo1 = config1_archivos.get(test)
@@ -361,8 +356,9 @@ elif opcion == "2️⃣ Comparar dos mediciones":
                         ax.set_ylabel("Amplitud (cm)")
                         ax.legend()
                         ax.grid(True)
-                        st.pyplot(fig)
-                        plt.close(fig) # Close the figure to free up memory
+                        st.pyplot(fig) # Muestra en Streamlit
+                        figs_comparison.append(fig) # Añade la figura a la lista para el PDF
+                        plt.close(fig) # Cierra la figura para liberar memoria
                     else:
                         st.warning(f"No hay suficientes datos de ventanas para graficar el test: {test}")
                 else:
@@ -371,8 +367,6 @@ elif opcion == "2️⃣ Comparar dos mediciones":
             st.subheader("Conclusión del Análisis Comparativo")
             st.write(conclusion)
 
-            # Combine results for PDF if necessary or modify generate_pdf to handle two DFs
-            # For now, let's create a combined DataFrame for simpler PDF passing
             combined_df_for_pdf = pd.DataFrame()
             if not df_resultados_config1.empty:
                 df_resultados_config1['Measurement'] = 1
@@ -381,14 +375,13 @@ elif opcion == "2️⃣ Comparar dos mediciones":
                 df_resultados_config2['Measurement'] = 2
                 combined_df_for_pdf = pd.concat([combined_df_for_pdf, df_resultados_config2])
             
-            # Generate PDF for comparison
             if not combined_df_for_pdf.empty:
                 generar_pdf(
                     datos_paciente_dict=datos_personales,
                     df_resultados=combined_df_for_pdf,
                     nombre_archivo="informe_comparativo_temblor.pdf",
-                    diagnostico=conclusion, # Pass the conclusion as the diagnosis for comparative report
-                    fig=None, # In comparison mode, figures are generated and added within the loop, or re-generated.
+                    diagnostico=conclusion,
+                    figs=figs_comparison, # Pasa la lista de figuras
                     comparison_mode=True,
                     config1_params=parametros_config1,
                     config2_params=parametros_config2
@@ -490,13 +483,17 @@ elif opcion == "3️⃣ Predicción de Temblor":
                 st.dataframe(df_for_prediction)
 
                 model_filename = 'tremor_prediction_model_V2.joblib'
+                
+                prediction_result_str = "No se pudo realizar la predicción."
+                prediction_probabilities_dict = {}
 
                 try:
                     modelo_cargado = load_tremor_model(model_filename)
                     prediction = modelo_cargado.predict(df_for_prediction)
+                    prediction_result_str = prediction[0]
 
                     st.subheader("Resultado de la Predicción:")
-                    st.success(f"La predicción del modelo es: **{prediction[0]}**")
+                    st.success(f"La predicción del modelo es: **{prediction_result_str}**")
 
                     if hasattr(modelo_cargado, 'predict_proba'):
                         probabilities = modelo_cargado.predict_proba(df_for_prediction)
@@ -504,6 +501,7 @@ elif opcion == "3️⃣ Predicción de Temblor":
                         if hasattr(modelo_cargado, 'classes_'):
                             for i, class_label in enumerate(modelo_cargado.classes_):
                                 st.write(f"- **{class_label}**: {probabilities[0][i]*100:.2f}%")
+                                prediction_probabilities_dict[class_label] = probabilities[0][i]*100
                         else:
                             st.info("El modelo no tiene el atributo 'classes_'. No se pueden mostrar las etiquetas de clase.")
 
@@ -513,10 +511,18 @@ elif opcion == "3️⃣ Predicción de Temblor":
                 except Exception as e:
                     st.error(f"Ocurrió un error al usar el modelo: {e}")
                     st.error("Verifica que el DataFrame `df_for_prediction` coincida con lo que espera el modelo.")
+                
+                # Prepare prediction info for PDF
+                prediction_info_for_pdf = {
+                    "prediction": prediction_result_str,
+                    "probabilities": prediction_probabilities_dict
+                }
 
-                # Optional graph generation
+
+                # Optional graph generation for prediction
                 all_ventanas_for_plot = []
                 current_min_ventanas = float('inf')
+                figs_prediction = [] # Lista para las figuras de predicción para el PDF
 
                 for test_type, uploaded_file in prediccion_files_correctas.items():
                     if uploaded_file is not None:
@@ -549,7 +555,33 @@ elif opcion == "3️⃣ Predicción de Temblor":
                     ax.set_ylabel("Amplitud (cm)")
                     ax.legend()
                     ax.grid(True)
-                    st.pyplot(fig)
+                    st.pyplot(fig) # Muestra en Streamlit
+                    figs_prediction.append(fig) # Añade la figura a la lista para el PDF
                     plt.close(fig)
                 else:
                     st.warning("No hay suficientes datos de ventanas para graficar los archivos de predicción.")
+
+                # Generar PDF para la opción 3
+                if not df_metrics_display.empty: # Asegurarse de que hay métricas para la tabla
+                    generar_pdf(
+                        datos_paciente_dict=datos_paciente, # Información personal
+                        df_resultados=df_metrics_display, # Cuadro comparativo de métricas calculadas
+                        nombre_archivo="informe_prediccion_temblor.pdf",
+                        diagnostico=prediction_result_str, # La predicción como diagnóstico/conclusión
+                        figs=figs_prediction, # Las figuras generadas
+                        comparison_mode=False, # No es modo comparación
+                        config1_params=None, # No aplicable
+                        config2_params=None, # No aplicable
+                        prediction_info=prediction_info_for_pdf # Información de la predicción
+                    )
+
+                    with open("informe_prediccion_temblor.pdf", "rb") as f:
+                        st.download_button(
+                            label="Descargar Informe PDF de Predicción",
+                            data=f.read(),
+                            file_name="informe_prediccion_temblor.pdf",
+                            mime="application/pdf"
+                        )
+                    st.info("El archivo se descargará en tu carpeta de descargas predeterminada o el navegador te pedirá la ubicación, dependiendo de tu configuración.")
+                else:
+                    st.warning("No hay datos suficientes para generar un informe de predicción PDF.")
