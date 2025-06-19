@@ -8,34 +8,30 @@ from io import BytesIO
 
 def limpiar_texto_para_pdf(texto):
     """Normaliza y limpia texto para asegurar compatibilidad con PDF."""
-    if texto is None: # Añadido para manejar None
+    if texto is None:
         return ""
+    # Asegúrate de que el texto sea una cadena antes de normalizar
     return unicodedata.normalize("NFKD", str(texto)).encode("ASCII", "ignore").decode("ASCII")
 
 class PDF(FPDF):
     def header(self):
-        # Header (optional, can be customized)
-        # self.set_font('Arial', 'B', 15)
-        # self.cell(0, 10, 'Informe de Análisis de Temblor', 0, 1, 'C')
         pass
 
     def footer(self):
-        # Page footer
         self.set_y(-15)
         self.set_font('Arial', 'I', 8)
         self.cell(0, 10, f'Página {self.page_no()}/{{nb}}', 0, 0, 'C')
 
 def generar_pdf(datos_paciente_dict, df_resultados, nombre_archivo="informe_temblor.pdf",
-                diagnostico="", figs=None, comparison_mode=False,
-                config1_params=None, config2_params=None, prediction_info=None): # Añadido prediction_info
+                diagnostico="", img_buffers=None, comparison_mode=False, # Cambiado figs a img_buffers
+                config1_params=None, config2_params=None, prediction_info=None):
 
     fecha_hora = (datetime.now() - timedelta(hours=3)).strftime("%d/%m/%Y %H:%M")
     
-    # Initialize PDF with alias for total pages
-    pdf = PDF() # Usamos la clase PDF personalizada para el pie de página
+    pdf = PDF()
     pdf.alias_nb_pages() 
     pdf.add_page()
-    pdf.set_auto_page_break(auto=True, margin=15) # Asegura saltos de página automáticos
+    pdf.set_auto_page_break(auto=True, margin=15)
     
     pdf.set_font("Arial", 'B', 16)
     pdf.cell(0, 10, "Informe de Análisis de Temblor", ln=True, align='C')
@@ -45,24 +41,23 @@ def generar_pdf(datos_paciente_dict, df_resultados, nombre_archivo="informe_temb
     elif prediction_info:
         pdf.cell(0, 10, "Informe de Predicción de Temblor", ln=True, align='C')
 
-    pdf.set_font("Arial", size=10) # Fuente un poco más pequeña para el texto general
-    pdf.ln(5) # Espacio reducido
-    pdf.cell(0, 7, f"Fecha y hora del análisis: {fecha_hora}", ln=True) # Altura de celda reducida
+    pdf.set_font("Arial", size=10)
+    pdf.ln(5)
+    pdf.cell(0, 7, f"Fecha y hora del análisis: {fecha_hora}", ln=True)
 
-    # Helper para imprimir campos solo si tienen valor
     def _imprimir_campo_pdf(pdf_obj, etiqueta, valor, unit=""):
         cleaned_valor = limpiar_texto_para_pdf(valor)
-        if cleaned_valor and cleaned_valor.lower() != "no especificado":
-            pdf_obj.cell(0, 7, f"{etiqueta}: {cleaned_valor}{unit}", ln=True) # Altura de celda reducida
+        if cleaned_valor and cleaned_valor.lower() not in ["no especificado", "nan", "none"]: # Más robusto
+            pdf_obj.cell(0, 7, f"{etiqueta}: {cleaned_valor}{unit}", ln=True)
 
-    pdf.set_font("Arial", 'B', 12) # Títulos de sección un poco más pequeños
+    pdf.set_font("Arial", 'B', 12)
     pdf.cell(0, 10, "Datos del Paciente", ln=True)
-    pdf.set_font("Arial", size=10) # Contenido de datos del paciente
+    pdf.set_font("Arial", size=10)
 
     _imprimir_campo_pdf(pdf, "Nombre", datos_paciente_dict.get("Nombre"))
     _imprimir_campo_pdf(pdf, "Apellido", datos_paciente_dict.get("Apellido"))
 
-    edad_val = datos_paciente_dict.get("edad")
+    edad_val = datos_paciente_dict.get("Edad") # Usar "Edad" con mayúscula para extracción
     edad_str_to_print = None
     try:
         if edad_val is not None and str(edad_val).strip() != "":
@@ -72,28 +67,41 @@ def generar_pdf(datos_paciente_dict, df_resultados, nombre_archivo="informe_temb
         pass
     _imprimir_campo_pdf(pdf, "Edad", edad_str_to_print)
 
-    _imprimir_campo_pdf(pdf, "Sexo", datos_paciente_dict.get("sexo"))
+    _imprimir_campo_pdf(pdf, "Sexo", datos_paciente_dict.get("Sexo")) # Usar "Sexo" con mayúscula
     _imprimir_campo_pdf(pdf, "Diagnóstico", datos_paciente_dict.get("Diagnostico"))
     _imprimir_campo_pdf(pdf, "Tipo", datos_paciente_dict.get("Tipo"))
     _imprimir_campo_pdf(pdf, "Antecedente", datos_paciente_dict.get("Antecedente"))
     _imprimir_campo_pdf(pdf, "Medicacion", datos_paciente_dict.get("Medicacion"))
 
-    pdf.ln(3) # Espacio reducido
+    pdf.ln(3)
 
     # Parámetros que queremos mostrar en la sección de configuración
+    # **IMPORTANTE: Estos deben coincidir con las claves devueltas por extraer_datos_paciente**
     parametros_estimulacion_keys = [
-        "Mano", "Dedo", "ECP", "GPI", "NST", "Polaridad",
+        "mano_medida", "dedo_medido", "ECP", "GPI", "NST", "Polaridad",
         "Duracion", "Pulso", "Corriente", "Voltaje", "Frecuencia"
     ]
-    parametros_estimulacion_units = { # Unidades para display
-        "Mano": "", "Dedo": "", 
+    parametros_estimulacion_units = {
+        "mano_medida": "", "dedo_medido": "", # Cambiado de "Mano", "Dedo" a "mano_medida", "dedo_medido"
         "Duracion": " ms", "Pulso": " µs", "Corriente": " mA",
         "Voltaje": " V", "Frecuencia": " Hz"
     }
+    # Diccionario para nombres de etiquetas a mostrar en PDF
+    display_names = {
+        "mano_medida": "Mano",
+        "dedo_medido": "Dedo",
+        "ECP": "ECP",
+        "GPI": "GPI",
+        "NST": "NST",
+        "Polaridad": "Polaridad",
+        "Duracion": "Duración",
+        "Pulso": "Pulso",
+        "Corriente": "Corriente",
+        "Voltaje": "Voltaje",
+        "Frecuencia": "Frecuencia"
+    }
 
-    # Function to print config/stimulation parameters
     def _print_config_section(pdf_obj, params_dict, title):
-        # Check if there's any non-empty parameter to display in this section
         has_params_to_display = False
         for param_key in parametros_estimulacion_keys:
             if params_dict and params_dict.get(param_key) is not None and str(params_dict.get(param_key)).strip() != "":
@@ -103,11 +111,13 @@ def generar_pdf(datos_paciente_dict, df_resultados, nombre_archivo="informe_temb
         if has_params_to_display:
             pdf_obj.set_font("Arial", 'B', 12)
             pdf_obj.cell(0, 10, limpiar_texto_para_pdf(title), ln=True)
-            pdf_obj.set_font("Arial", size=10) # Contenido de configuración
+            pdf_obj.set_font("Arial", size=10)
             for param_key in parametros_estimulacion_keys:
                 value = params_dict.get(param_key)
                 unit = parametros_estimulacion_units.get(param_key, "")
-                _imprimir_campo_pdf(pdf_obj, param_key, value, unit)
+                # Usar el nombre de visualización si existe, de lo contrario usar la clave
+                label_to_display = display_names.get(param_key, param_key) 
+                _imprimir_campo_pdf(pdf_obj, label_to_display, value, unit)
             pdf_obj.ln(3)
 
     if comparison_mode:
@@ -115,34 +125,33 @@ def generar_pdf(datos_paciente_dict, df_resultados, nombre_archivo="informe_temb
             _print_config_section(pdf, config1_params, "Configuración Medición 1")
         if config2_params:
             _print_config_section(pdf, config2_params, "Configuración Medición 2")
-    elif prediction_info: # Para la predicción, también mostrar la configuración de la medición
+    elif prediction_info:
+        # Aquí, datos_paciente_dict debe contener 'mano_medida' y 'dedo_medido' si están presentes
         _print_config_section(pdf, datos_paciente_dict, "Configuración de la Medición")
-    else: # Modo de medición única
+    else:
         _print_config_section(pdf, datos_paciente_dict, "Configuración de la Medición")
 
 
-    # Table for results
     def _print_results_table(pdf_obj, df_res, title="Resultados del Análisis"):
         if df_res.empty:
             pdf_obj.set_font("Arial", size=10)
-            pdf_obj.cell(0, 7, f"{title}: No hay resultados disponibles.", ln=True)
+            pdf_obj.cell(0, 7, f"{limpiar_texto_para_pdf(title)}: No hay resultados disponibles.", ln=True)
             pdf_obj.ln(3)
             return
 
         pdf_obj.set_font("Arial", 'B', 12)
         pdf_obj.cell(0, 10, limpiar_texto_para_pdf(title), ln=True)
-        pdf_obj.set_font("Arial", 'B', 10) # Encabezados de tabla
+        pdf_obj.set_font("Arial", 'B', 10)
 
         headers = ["Test", "Frecuencia (Hz)", "RMS", "Amplitud (cm)"]
         col_widths = [30, 40, 30, 50]
 
-        # Ajuste para el ancho de las celdas de encabezado para que se ajusten
         current_x = pdf_obj.get_x()
         for i, header in enumerate(headers):
-            pdf_obj.cell(col_widths[i], 7, limpiar_texto_para_pdf(header), 1, 0, 'C') # Centrado
-        pdf_obj.ln(7) # Salto de línea con altura de celda reducida
+            pdf_obj.cell(col_widths[i], 7, limpiar_texto_para_pdf(header), 1, 0, 'C')
+        pdf_obj.ln(7)
         
-        pdf_obj.set_font("Arial", "", 9) # Contenido de tabla
+        pdf_obj.set_font("Arial", "", 9)
 
         for _, row in df_res.iterrows():
             pdf_obj.cell(col_widths[0], 6, limpiar_texto_para_pdf(row['Test']), 1)
@@ -153,7 +162,6 @@ def generar_pdf(datos_paciente_dict, df_resultados, nombre_archivo="informe_temb
         pdf_obj.ln(3)
 
     if comparison_mode:
-        # Asegurarse de que los DataFrames no estén vacíos antes de filtrar
         if not df_resultados.empty:
             _print_results_table(pdf, df_resultados[df_resultados['Measurement'] == 1].drop(columns='Measurement', errors='ignore'), "Resultados Medición 1")
             _print_results_table(pdf, df_resultados[df_resultados['Measurement'] == 2].drop(columns='Measurement', errors='ignore'), "Resultados Medición 2")
@@ -166,7 +174,6 @@ def generar_pdf(datos_paciente_dict, df_resultados, nombre_archivo="informe_temb
     else:
         _print_results_table(pdf, df_resultados)
 
-    # Prediction Info Section
     if prediction_info:
         pdf.ln(5)
         pdf.set_font("Arial", 'B', 12)
@@ -183,8 +190,6 @@ def generar_pdf(datos_paciente_dict, df_resultados, nombre_archivo="informe_temb
                 pdf.cell(0, 6, f"- {limpiar_texto_para_pdf(label)}: {prob:.2f}%", ln=True)
         pdf.ln(3)
 
-
-    # Clinical interpretation / Conclusion
     pdf.ln(5)
     pdf.set_font("Arial", 'B', 12)
     
@@ -221,39 +226,27 @@ def generar_pdf(datos_paciente_dict, df_resultados, nombre_archivo="informe_temb
         """
         pdf.multi_cell(0, 6, limpiar_texto_para_pdf(texto_original))
 
-    # Handle figures (now `figs` can be a list)
-    if figs:
-        # Ensure figs is always a list for iteration
-        if not isinstance(figs, list):
-            figs = [figs]
+    # Handle image buffers
+    if img_buffers: # Ahora acepta buffers de imagen, no figuras
+        if not isinstance(img_buffers, list):
+            img_buffers = [img_buffers]
             
-        for i, current_fig in enumerate(figs):
-            if current_fig is not None:
-                # Add a new page for each figure for better spacing, or check if there's enough space
-                # A 180mm width image needs about 100-110mm height with standard aspect ratio for matplotlib
-                # We'll assume a max height of 100mm for the plot itself (plus padding)
+        for i, img_buf in enumerate(img_buffers):
+            if img_buf is not None:
                 required_height = 100 + 10 # Image height + some padding
                 
-                if pdf.get_y() + required_height > pdf.h - pdf.b_margin - 5: # Check if enough space is available, add a small buffer
+                if pdf.get_y() + required_height > pdf.h - pdf.b_margin - 5:
                      pdf.add_page()
                 else: 
-                    pdf.ln(5) # Just a little space if it fits on the same page
+                    pdf.ln(5) 
 
                 try:
-                    img_buffer = BytesIO()
-                    current_fig.savefig(img_buffer, format='png', bbox_inches='tight', dpi=300) # Increased DPI for quality
-                    img_buffer.seek(0)
-
-                    # Calculate width to fit page, maintaining aspect ratio. 
-                    # Page width is 210mm. Margins are 10mm each side (default). Usable width 190mm.
-                    # Set image width to 180mm. Let FPDF calculate height.
-                    pdf.image(img_buffer, x=15, w=180) 
-                    img_buffer.close()
+                    # Pass the BytesIO object directly
+                    pdf.image(img_buf, x=15, w=180) 
+                    img_buf.seek(0) # Rewind for safety if img_buf is reused (though not in this design)
                 except Exception as e:
-                    print(f"Error al añadir la imagen {i+1} al PDF: {e}") # For debugging
-                    # Optionally add a text placeholder in the PDF if image fails
+                    print(f"Error al añadir la imagen {i+1} al PDF: {e}")
                     pdf.set_font("Arial", 'I', 10)
                     pdf.cell(0, 10, f"Error al cargar gráfico {i+1}", ln=True, align='C')
-
 
     pdf.output(nombre_archivo)
