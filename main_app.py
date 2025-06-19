@@ -1,145 +1,107 @@
 # main_app.py
-
 import streamlit as st
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import os
+from datetime import datetime, timedelta
 import io
+from io import BytesIO
 
-# Importar constantes y funciones de nuestros módulos
-from config import FS, VENTANA_DURACION_SEG, SOLAPAMIENTO_VENTANA, EXPECTED_FEATURES_FOR_MODEL, SENSOR_COLS
-from data_processing import load_csv, extract_patient_data, clean_sensor_data
-from signal_analysis import analyze_tremor_windows
-from pdf_generation import generate_tremor_report_pdf
-from ml_model import load_prediction_model, make_tremor_prediction
+# Import functions and configurations from other files
+from config import VENTANA_DURACION_SEG
+from data_processing import extraer_datos_paciente, diagnosticar
+from signal_analysis import analizar_temblor_por_ventanas_resultante
+from pdf_generation import generar_pdf
+from ml_model import load_tremor_model, prepare_data_for_prediction
 
-# --- CONFIGURACIÓN GENERAL DE STREAMLIT ---
-st.set_page_config(layout="wide", page_title="Análisis y Predicción de Temblor", page_icon="📈")
 
 # Inicializar una variable en el estado de sesión para controlar el reinicio
 if "reiniciar" not in st.session_state:
     st.session_state.reiniciar = False
 
-# Función para manejar el reinicio de la aplicación
-def manejar_reinicio():
-    if st.session_state.get("reiniciar", False):
-        # Eliminar archivos temporales si es necesario (ej. PDFs generados)
-        # (Esto puede ser mejorado para buscar archivos específicos si no se eliminan al final de la descarga)
-        # Por ahora, solo resetea el estado de la sesión
-        pass # La generación de PDF ahora maneja archivos temporales de figura de forma local
-
-    st.session_state.clear()
-    st.experimental_rerun()
-
-# --- Estilos CSS generales (otros estilos específicos de uploader se mueven a sus secciones) ---
 st.markdown("""
     <style>
-    .prueba-titulo {
-        font-weight: bold;
-        margin-top: 1.5rem;
-        margin-bottom: 0.5rem;
+    /* Oculta el texto 'Limit 200MB per file • CSV' */
+    div[data-testid="stFileUploaderDropzoneInstructions"] {
+        display: none !important;
+    }
+
+    div[data-testid="stFileUploader"] button[kind="secondary"] {
+        visibility: hidden;
+    }
+    div[data-testid="stFileUploader"] button[kind="secondary"]::before {
+        float: right;
+        margin-right: 0;
+        content: "Cargar archivos";
+        visibility: visible;
+        display: inline-block;
+        background-color: #FF5722;
+        color: white;
+        padding: 0.5em 1em;
+        border-radius: 6px;
+        border: 2px solid white;
+        cursor: pointer;
+    }
+    /* Alinea todo a la derecha */
+    div[data-testid="stFileUploader"] > div:first-child {
+        display: flex;
+        justify-content: flex-end;
+        align-items: center;
+    }
+    div[data-testid="stFileUploader"] > div {
+        display: flex;
+        justify-content: flex-end;
+        align-items: center;
     }
     </style>
 """, unsafe_allow_html=True)
 
-
-# --- Funciones específicas de la aplicación (diagnóstico rule-based) ---
-def diagnosticar_rule_based(df_results_table):
-    """
-    Realiza un diagnóstico basado en reglas simples de frecuencia y amplitud.
-    Recibe un DataFrame con los resultados promedio de los tests.
-    """
-    def get_max_amplitude(test_name):
-        # Filtra el DataFrame para el test_name específico y obtiene la Amplitud Temblor (cm)
-        fila = df_results_table[df_results_table['Test'] == test_name]
-        return fila['Amplitud Temblor (cm)'].max() if not fila.empty else 0
-
-    def get_mean_frequency(test_name):
-        # Filtra el DataFrame para el test_name específico y obtiene la Frecuencia Dominante (Hz)
-        fila = df_results_table[df_results_table['Test'] == test_name]
-        return fila['Frecuencia Dominante (Hz)'].mean() if not fila.empty else 0
-
-    # Obtener métricas para cada test
-    amp_reposo = get_max_amplitude('Reposo')
-    freq_reposo = get_mean_frequency('Reposo')
-    amp_postural = get_max_amplitude('Postural')
-    freq_postural = get_mean_frequency('Postural')
-    amp_accion = get_mean_frequency('Acción') # Corregido: Debe ser frecuencia, no amplitud
-
-    # Reglas de diagnóstico
-    # Parkinson: temblor en reposo > 0.3 cm y frecuencia entre 3-6.5 Hz
-    if amp_reposo > 0.3 and 3 <= freq_reposo <= 6.5:
-        return "Probable Parkinson"
-    # Temblor Esencial: temblor postural/acción > 0.3 cm y frecuencia entre 7.5-12 Hz
-    elif (amp_postural > 0.3 or amp_accion > 0.3) and \
-         (7.5 <= freq_postural <= 12 or 7.5 <= freq_accion <= 12):
-        return "Probable Temblor Esencial"
-    else:
-        return "Temblor dentro de parámetros normales"
+def manejar_reinicio():
+    if st.session_state.get("reiniciar", False):
+        # In a deployed Streamlit app, you typically don't remove files
+        # from the disk where the app is running. This section is more
+        # relevant for local development if you create temporary files.
+        # For a clean reset, clearing session_state and rerunning is key.
+        st.session_state.clear()
+        st.experimental_rerun()
 
 
-# ------------------ MODO PRINCIPAL DE LA APLICACIÓN --------------------
+# ------------------ Modo principal --------------------
 
 st.title("🧠 Análisis de Temblor")
 opcion = st.sidebar.radio("Selecciona una opción:", ["1️⃣ Análisis de una medición", "2️⃣ Comparar dos mediciones", "3️⃣ Predicción de Temblor"])
-
 if st.sidebar.button("🔄 Nuevo análisis"):
-    manejar_reinicio()
+    st.session_state.reiniciar = True # Set flag to true
+    manejar_reinicio() # Call the handler
 
-# --- Opción 1: Análisis de una medición ---
 if opcion == "1️⃣ Análisis de una medición":
     st.title("📈 Análisis de una medición")
 
     st.markdown('<div class="prueba-titulo">Subir archivo CSV para prueba en REPOSO</div>', unsafe_allow_html=True)
-    reposo_file = st.file_uploader("Arrastrar archivo aquí", type=["csv"], key="reposo") # Cambiado el label
+    reposo_file = st.file_uploader("", type=["csv"], key="reposo")
 
     st.markdown('<div class="prueba-titulo">Subir archivo CSV para prueba POSTURAL</div>', unsafe_allow_html=True)
-    postural_file = st.file_uploader("Arrastrar archivo aquí", type=["csv"], key="postural") # Cambiado el label
+    postural_file = st.file_uploader("", type=["csv"], key="postural")
 
     st.markdown('<div class="prueba-titulo">Subir archivo CSV para prueba en ACCIÓN</div>', unsafe_allow_html=True)
-    accion_file = st.file_uploader("Arrastrar archivo aquí", type=["csv"], key="accion") # Cambiado el label
+    accion_file = st.file_uploader("", type=["csv"], key="accion")
 
-    # Estilos CSS personalizados para los uploaders en esta sección
     st.markdown("""
         <style>
-        /* Oculta el texto 'Limit 200MB per file • CSV' */
-        div[data-testid="stFileUploaderDropzoneInstructions"] p:nth-child(2) {
+        /* Ocultar el texto original de "Drag and drop file here" */
+        div[data-testid="stFileUploaderDropzoneInstructions"] span {
             display: none !important;
         }
-        /* Alinea el "Arrastrar archivo aquí" a la derecha, ya que ahora es el label */
-        div[data-testid="stFileUploaderDropzoneInstructions"] {
-            text-align: right;
-        }
 
-        /* Oculta el botón por defecto de Streamlit */
-        div[data-testid="stFileUploader"] button[kind="secondary"] {
-            visibility: hidden;
-        }
-        /* Muestra y estiliza el botón personalizado */
-        div[data-testid="stFileUploader"] button[kind="secondary"]::before {
-            float: right;
-            margin-right: 0;
-            content: "Cargar archivos";
-            visibility: visible;
-            display: inline-block;
-            background-color: #FF5722;
-            color: white;
-            padding: 0.5em 1em;
-            border-radius: 6px;
-            border: 2px solid white;
-            cursor: pointer;
-        }
-        /* Ajusta la alineación del contenedor del uploader para que el botón esté a la derecha */
-        div[data-testid="stFileUploader"] > div:first-child {
-            display: flex;
-            flex-direction: column; /* Cambiado a columna para el label y luego el botón */
-            align-items: flex-end; /* Alinea los elementos a la derecha */
-        }
-        div[data-testid="stFileUploader"] > div {
-            display: flex;
-            flex-direction: column; /* Asegura que el dropzone y el botón estén en columna */
-            align-items: flex-end; /* Alinea el contenido a la derecha */
+        /* Añadir nuestro propio texto arriba del botón */
+        div[data-testid="stFileUploaderDropzoneInstructions"]::before {
+            content: "Arrastrar archivo aquí";
+            font-weight: bold;
+            font-size: 16px;
+            color: #444;
+            display: block;
+            margin-bottom: 0.5rem;
         }
         </style>
     """, unsafe_allow_html=True)
@@ -151,464 +113,443 @@ if opcion == "1️⃣ Análisis de una medición":
         "Acción": accion_file,
     }
 
-    if st.button("Iniciar análisis"):
-        mediciones_tests_raw = {}
-        for test, file_obj in uploaded_files.items():
-            if file_obj is not None:
-                mediciones_tests_raw[test] = load_csv(file_obj)
+    # Inicializa estas variables FUERA del bloque del botón.
+    resultados_globales = []
+    datos_paciente_para_pdf = {} # Cambiado a diccionario para datos del paciente
+    ventanas_para_grafico = []
+    min_ventanas_count = float('inf')
+    fig = None  
 
-        if not mediciones_tests_raw:
+    if st.button("Iniciar análisis"):
+        mediciones_tests = {}
+        for test, file in uploaded_files.items():
+            if file is not None:
+                file.seek(0) # Reset file pointer for re-reading
+                mediciones_tests[test] = pd.read_csv(file, encoding='latin1')
+
+        if not mediciones_tests:
             st.warning("Por favor, sube al menos un archivo para iniciar el análisis.")
         else:
-            # Extraer datos del paciente del primer archivo válido
-            first_df_raw = None
-            for df_raw_val in mediciones_tests_raw.values():
-                if not df_raw_val.empty:
-                    first_df_raw = df_raw_val
+            primer_df_cargado = None
+            for test, datos in mediciones_tests.items():
+                if datos is not None and not datos.empty:
+                    primer_df_cargado = datos
                     break
 
-            if first_df_raw is not None:
-                patient_data_for_report = extract_patient_data(first_df_raw)
-            else:
-                patient_data_for_report = {} # Empty dict if no valid file
-
-            results_single_analysis = []
-            figures_for_report = []
-            min_ventanas_count = float('inf')
-            temp_window_dfs = [] # Para almacenar df_ventanas temporales para el gráfico
-
-            for test_type, raw_df in mediciones_tests_raw.items():
-                if not raw_df.empty:
-                    st.info(f"Procesando {test_type}...")
-                    # Limpieza y análisis de la señal
-                    cleaned_df = clean_sensor_data(raw_df)
-                    if cleaned_df.empty:
-                        st.warning(f"No hay datos de sensor válidos en el archivo de {test_type} después de la limpieza. Saltando análisis de {test_type}.")
-                        continue
-
-                    df_promedio, df_ventanas = analyze_tremor_windows(cleaned_df)
+            if primer_df_cargado is not None:
+                datos_paciente_para_pdf = extraer_datos_paciente(primer_df_cargado)
+            
+            for test, datos in mediciones_tests.items():
+                if datos is not None and not datos.empty:
+                    df_promedio, df_ventanas = analizar_temblor_por_ventanas_resultante(datos, fs=100)
 
                     if not df_promedio.empty:
-                        result_row = df_promedio.iloc[0].to_dict()
-                        result_row['Test'] = test_type
-                        results_single_analysis.append(result_row)
+                        fila = df_promedio.iloc[0].to_dict()
+                        fila['Test'] = test
+                        resultados_globales.append(fila)
 
                     if not df_ventanas.empty:
                         df_ventanas_copy = df_ventanas.copy()
-                        df_ventanas_copy["Test"] = test_type
-                        temp_window_dfs.append(df_ventanas_copy)
+                        df_ventanas_copy["Test"] = test
+                        ventanas_para_grafico.append(df_ventanas_copy)
                         if len(df_ventanas_copy) < min_ventanas_count:
                             min_ventanas_count = len(df_ventanas_copy)
+                else:
+                    st.info(f"No se cargó ningún archivo para el test de '{test}'. Se omitirá este análisis.")
 
-            if temp_window_dfs:
+
+            if ventanas_para_grafico:
                 fig, ax = plt.subplots(figsize=(10, 6))
-                for df_plot in temp_window_dfs:
-                    test_name = df_plot["Test"].iloc[0]
-                    # Ajustar la longitud de los datos a graficar si hay duraciones diferentes
-                    if min_ventanas_count != float('inf') and len(df_plot) > min_ventanas_count:
-                        df_to_plot = df_plot.iloc[:min_ventanas_count].copy()
+                for df in ventanas_para_grafico:
+                    test_name = df["Test"].iloc[0]
+                    if min_ventanas_count != float('inf') and len(df) > min_ventanas_count:
+                        df_to_plot = df.iloc[:min_ventanas_count].copy()
                     else:
-                        df_to_plot = df_plot.copy()
-
-                    df_to_plot["Tiempo (segundos)"] = df_to_plot["Ventana"] * VENTANA_DURACION_SEG * (1 - SOLAPAMIENTO_VENTANA)
+                        df_to_plot = df.copy()
+                    
+                    df_to_plot["Tiempo (segundos)"] = df_to_plot["Ventana"] * VENTANA_DURACION_SEG
                     ax.plot(df_to_plot["Tiempo (segundos)"], df_to_plot["Amplitud Temblor (cm)"], label=f"{test_name}")
 
-                ax.set_title("Amplitud de Temblor por Ventana de Tiempo")
+                ax.set_title("Amplitud de Temblor por Ventana de Tiempo (Comparación Visual)")
                 ax.set_xlabel("Tiempo (segundos)")
                 ax.set_ylabel("Amplitud (cm)")
                 ax.legend()
                 ax.grid(True)
                 st.pyplot(fig)
-                figures_for_report.append(fig) # Add figure to list for PDF
-
             else:
                 st.warning("No se generaron datos de ventanas para el gráfico.")
 
-            if results_single_analysis:
-                df_results_final = pd.DataFrame(results_single_analysis)
-                df_results_final_display = df_results_final.set_index('Test') # For display
-
-                diagnostico_auto = diagnosticar_rule_based(df_results_final)
+            if resultados_globales:
+                df_resultados_final = pd.DataFrame(resultados_globales)
+                diagnostico_auto = diagnosticar(df_resultados_final)
 
                 st.subheader("Resultados del Análisis de Temblor")
-                st.dataframe(df_results_final_display)
-                st.write(f"Diagnóstico automático: **{diagnostico_auto}**")
+                st.dataframe(df_resultados_final.set_index('Test'))
 
-                # Generar PDF
-                pdf_output_bytes = generate_tremor_report_pdf(
-                    patient_data_for_report,
-                    results_df=df_results_final,
-                    figures=figures_for_report,
-                    conclusion_text=f"Diagnóstico automático: {diagnostico_auto}"
+                generar_pdf(
+                    datos_paciente_para_pdf, 
+                    df_resultados_final,
+                    nombre_archivo="informe_temblor.pdf",
+                    diagnostico=diagnostico_auto,
+                    fig=fig
                 )
 
-                st.download_button("📄 Descargar informe PDF", pdf_output_bytes.getvalue(), file_name="informe_temblor.pdf", mime="application/pdf")
-                st.info("El archivo se descargará en tu carpeta de descargas predeterminada o el navegador te pedirá la ubicación.")
+                with open("informe_temblor.pdf", "rb") as f:
+                    st.download_button("📄 Descargar informe PDF", f, file_name="informe_temblor.pdf")
+                    st.info("El archivo se descargará en tu carpeta de descargas predeterminada o el navegador te pedirá la ubicación, dependiendo de tu configuración.")
             else:
                 st.warning("No se encontraron datos suficientes para el análisis.")
 
-
-# --- Opción 2: Comparar dos mediciones ---
 elif opcion == "2️⃣ Comparar dos mediciones":
     st.title("📊 Comparar dos mediciones")
 
     st.markdown("### Cargar archivos de la **medición 1**")
-    config1_archivos_raw = {
-        "Reposo": st.file_uploader("Arrastrar archivo aquí", type="csv", key="reposo1"), # Cambiado el label
-        "Postural": st.file_uploader("Arrastrar archivo aquí", type="csv", key="postural1"), # Cambiado el label
-        "Acción": st.file_uploader("Arrastrar archivo aquí", type="csv", key="accion1") # Cambiado el label
+    config1_archivos = {
+        "Reposo": st.file_uploader("Archivo de REPOSO medición 1", type="csv", key="reposo1"),
+        "Postural": st.file_uploader("Archivo de POSTURAL medición 1", type="csv", key="postural1"),
+        "Acción": st.file_uploader("Archivo de ACCION medición 1", type="csv", key="accion1")
     }
 
     st.markdown("### Cargar archivos de la **medición 2**")
-    config2_archivos_raw = {
-        "Reposo": st.file_uploader("Arrastrar archivo aquí", type="csv", key="reposo2"), # Cambiado el label
-        "Postural": st.file_uploader("Arrastrar archivo aquí", type="csv", key="postural2"), # Cambiado el label
-        "Acción": st.file_uploader("Arrastrar archivo aquí", type="csv", key="accion2") # Cambiado el label
+    config2_archivos = {
+        "Reposo": st.file_uploader("Archivo de REPOSO medición 2", type="csv", key="reposo2"),
+        "Postural": st.file_uploader("Archivo de POSTURAL medición 2", type="csv", key="postural2"),
+        "Acción": st.file_uploader("Archivo de ACCION medición 2", type="csv", key="accion2")
     }
 
-    # Estilos CSS personalizados para los uploaders en esta sección
     st.markdown("""
         <style>
-        /* Oculta el texto 'Limit 200MB per file • CSV' */
-        div[data-testid="stFileUploaderDropzoneInstructions"] p:nth-child(2) {
+        div[data-testid="stFileUploaderDropzoneInstructions"] span {
             display: none !important;
         }
-        /* Alinea el "Arrastrar archivo aquí" a la derecha, ya que ahora es el label */
-        div[data-testid="stFileUploaderDropzoneInstructions"] {
-            text-align: right;
-        }
-
-        /* Oculta el botón por defecto de Streamlit */
-        div[data-testid="stFileUploader"] button[kind="secondary"] {
-            visibility: hidden;
-        }
-        /* Muestra y estiliza el botón personalizado */
-        div[data-testid="stFileUploader"] button[kind="secondary"]::before {
-            float: right;
-            margin-right: 0;
-            content: "Cargar archivos";
-            visibility: visible;
-            display: inline-block;
-            background-color: #FF5722;
-            color: white;
-            padding: 0.5em 1em;
-            border-radius: 6px;
-            border: 2px solid white;
-            cursor: pointer;
-        }
-        /* Ajusta la alineación del contenedor del uploader para que el botón esté a la derecha */
-        div[data-testid="stFileUploader"] > div:first-child {
-            display: flex;
-            flex-direction: column;
-            align-items: flex-end;
-        }
-        div[data-testid="stFileUploader"] > div {
-            display: flex;
-            flex-direction: column;
-            align-items: flex-end;
+        div[data-testid="stFileUploaderDropzoneInstructions"]::before {
+            content: "Arrastrar archivo aquí";
+            font-weight: bold;
+            font-size: 16px;
+            color: #444;
+            display: block;
+            margin-bottom: 0.5rem;
         }
         </style>
     """, unsafe_allow_html=True)
 
+    def analizar_configuracion_comparacion(archivos, fs=100):
+        resultados = []
+        for test, archivo in archivos.items():
+            if archivo is not None:
+                archivo.seek(0)
+                df = pd.read_csv(archivo, encoding='latin1')
+                df_promedio, df_ventana = analizar_temblor_por_ventanas_resultante(df, fs=fs)
+                if isinstance(df_ventana, pd.DataFrame) and not df_ventana.empty:
+                    prom = df_promedio.iloc[0] if not df_promedio.empty else None
+                    if prom is not None:
+                        freq = prom['Frecuencia Dominante (Hz)']
+                        amp = prom['Amplitud Temblor (cm)']
+                        rms = prom['RMS (m/s2)']
+                        resultados.append({
+                            'Test': test,
+                            'Frecuencia Dominante (Hz)': round(freq, 2),
+                            'RMS (m/s2)': round(rms, 4),
+                            'Amplitud Temblor (cm)': round(amp, 2)
+                        })
+            else:
+                st.warning(f"Archivo de {test} no cargado para esta configuración. Se omitirá del análisis.")
+
+        return pd.DataFrame(resultados)
 
     if st.button("Comparar Mediciones"):
-        # Cargar todos los archivos raw para ambas configuraciones
-        config1_loaded_dfs = {test: load_csv(file_obj) for test, file_obj in config1_archivos_raw.items()}
-        config2_loaded_dfs = {test: load_csv(file_obj) for test, file_obj in config2_archivos_raw.items()}
-
-        # Verificar que se hayan cargado todos los archivos necesarios para la comparación
-        all_config1_loaded = all(df is not None and not df.empty for df in config1_loaded_dfs.values())
-        all_config2_loaded = all(df is not None and not df.empty for df in config2_loaded_dfs.values())
-
-        if not all_config1_loaded or not all_config2_loaded:
-            st.warning("Por favor, cargue los 3 archivos para ambas mediciones.")
+        # Check if at least one file is uploaded for each test type across both configurations
+        any_files_uploaded_config1 = any(f is not None for f in config1_archivos.values())
+        any_files_uploaded_config2 = any(f is not None for f in config2_archivos.values())
+        
+        if not any_files_uploaded_config1 and not any_files_uploaded_config2:
+            st.warning("Por favor, cargue al menos un archivo para cada medición para iniciar la comparación.")
         else:
-            # Extraer datos del paciente del primer archivo válido de la Configuración 1
-            patient_data_for_report = extract_patient_data(config1_loaded_dfs["Reposo"])
+            # Read the first available file from each configuration to extract metadata
+            df_config1_meta = None
+            for f in config1_archivos.values():
+                if f is not None:
+                    f.seek(0)
+                    df_config1_meta = pd.read_csv(f, encoding='latin1')
+                    break
 
-            results_config1 = []
-            results_config2 = []
-            figures_for_report = []
+            df_config2_meta = None
+            for f in config2_archivos.values():
+                if f is not None:
+                    f.seek(0)
+                    df_config2_meta = pd.read_csv(f, encoding='latin1')
+                    break
+            
+            # Extract patient data from the first available DF (assuming consistency)
+            datos_personales = {}
+            if df_config1_meta is not None:
+                datos_personales = extraer_datos_paciente(df_config1_meta)
+            elif df_config2_meta is not None:
+                datos_personales = extraer_datos_paciente(df_config2_meta) # Fallback if only config2 is uploaded initially
 
-            for test_type in ["Reposo", "Postural", "Acción"]:
-                st.info(f"Procesando {test_type} para Medición 1 y Medición 2...")
+            parametros_config1 = {}
+            if df_config1_meta is not None:
+                parametros_config1 = extraer_datos_paciente(df_config1_meta) # Re-use for config params
 
-                # Medición 1
-                cleaned_df1 = clean_sensor_data(config1_loaded_dfs[test_type])
-                if not cleaned_df1.empty:
-                    df1_promedio, df1_ventanas = analyze_tremor_windows(cleaned_df1)
-                    if not df1_promedio.empty:
-                        result_row1 = df1_promedio.iloc[0].to_dict()
-                        result_row1['Test'] = test_type
-                        results_config1.append(result_row1)
-                else:
-                    st.warning(f"No hay datos válidos en el archivo {test_type} de Medición 1 después de la limpieza.")
+            parametros_config2 = {}
+            if df_config2_meta is not None:
+                parametros_config2 = extraer_datos_paciente(df_config2_meta) # Re-use for config params
 
-                # Medición 2
-                cleaned_df2 = clean_sensor_data(config2_loaded_dfs[test_type])
-                if not cleaned_df2.empty:
-                    df2_promedio, df2_ventanas = analyze_tremor_windows(cleaned_df2)
-                    if not df2_promedio.empty:
-                        result_row2 = df2_promedio.iloc[0].to_dict()
-                        result_row2['Test'] = test_type
-                        results_config2.append(result_row2)
-                else:
-                    st.warning(f"No hay datos válidos en el archivo {test_type} de Medición 2 después de la limpieza.")
 
-                # Gráfico comparativo por test
-                if not cleaned_df1.empty and not cleaned_df2.empty and not df1_ventanas.empty and not df2_ventanas.empty:
-                    fig, ax = plt.subplots(figsize=(10, 5))
+            df_resultados_config1 = analizar_configuracion_comparacion(config1_archivos)
+            df_resultados_config2 = analizar_configuracion_comparacion(config2_archivos)
 
-                    df1_ventanas["Tiempo (segundos)"] = df1_ventanas["Ventana"] * VENTANA_DURACION_SEG * (1 - SOLAPAMIENTO_VENTANA)
-                    df2_ventanas["Tiempo (segundos)"] = df2_ventanas["Ventana"] * VENTANA_DURACION_SEG * (1 - SOLAPAMIENTO_VENTANA)
+            # Combine results for PDF generation if needed, or pass separately
+            # For PDF, let's keep them separate but make the PDF generation flexible.
+            
+            amp_avg_config1 = df_resultados_config1['Amplitud Temblor (cm)'].mean() if not df_resultados_config1.empty else 0
+            amp_avg_config2 = df_resultados_config2['Amplitud Temblor (cm)'].mean() if not df_resultados_config2.empty else 0
 
-                    # Asegurarse de que las series tengan la misma longitud para un gráfico significativo
-                    min_len = min(len(df1_ventanas), len(df2_ventanas))
-                    ax.plot(df1_ventanas["Tiempo (segundos)"].iloc[:min_len], df1_ventanas["Amplitud Temblor (cm)"].iloc[:min_len], label="Medición 1", color="blue")
-                    ax.plot(df2_ventanas["Tiempo (segundos)"].iloc[:min_len], df2_ventanas["Amplitud Temblor (cm)"].iloc[:min_len], label="Medición 2", color="orange")
+            rms_avg_config1 = df_resultados_config1['RMS (m/s2)'].mean() if not df_resultados_config1.empty else 0
+            rms_avg_config2 = df_resultados_config2['RMS (m/s2)'].mean() if not df_resultados_config2.empty else 0
 
-                    ax.set_title(f"Amplitud por Ventana - {test_type}")
-                    ax.set_xlabel("Tiempo (segundos)")
-                    ax.set_ylabel("Amplitud (cm)")
-                    ax.legend()
-                    ax.grid(True)
-                    st.pyplot(fig)
-                    figures_for_report.append(fig) # Add figure to list for PDF
-                else:
-                    st.warning(f"No se pudieron generar gráficos por ventana para el test {test_type} debido a datos insuficientes.")
-
-            if results_config1 and results_config2:
-                df_results_config1 = pd.DataFrame(results_config1)
-                df_results_config2 = pd.DataFrame(results_config2)
-
-                st.subheader("Resultados Medición 1")
-                st.dataframe(df_results_config1.set_index('Test'))
-
-                st.subheader("Resultados Medición 2")
-                st.dataframe(df_results_config2.set_index('Test'))
-
-                amp_avg_config1 = df_results_config1['Amplitud Temblor (cm)'].mean()
-                amp_avg_config2 = df_results_config2['Amplitud Temblor (cm)'].mean()
-
-                conclusion_text = ""
-                if amp_avg_config1 < amp_avg_config2:
-                    conclusion_text = (
-                        f"La Medición 1 muestra una amplitud de temblor promedio ({amp_avg_config1:.2f} cm) "
-                        f"más baja que la Medición 2 ({amp_avg_config2:.2f} cm), lo que sugiere una mayor reducción del temblor."
-                    )
-                elif amp_avg_config2 < amp_avg_config1:
-                    conclusion_text = (
-                        f"La Medición 2 muestra una amplitud de temblor promedio ({amp_avg_config2:.2f} cm) "
-                        f"más baja que la Medición 1 ({amp_avg_config1:.2f} cm), lo que sugiere una mayor reducción del temblor."
-                    )
-                else:
-                    conclusion_text = (
-                        f"Ambas mediciones muestran amplitudes de temblor promedio muy similares ({amp_avg_config1:.2f} cm). "
-                    )
-                st.subheader("Conclusión del Análisis Comparativo")
-                st.write(conclusion_text)
-
-                # Generar PDF comparativo
-                pdf_output_bytes = generate_tremor_report_pdf(
-                    patient_data_for_report,
-                    comparison_results_df1=df_results_config1,
-                    comparison_results_df2=df_results_config2,
-                    conclusion_text=conclusion_text,
-                    figures=figures_for_report,
-                    filename="informe_comparativo_temblor.pdf"
+            conclusion = ""
+            if amp_avg_config1 < amp_avg_config2:
+                conclusion = (
+                    f"La Medición 1 muestra una amplitud de temblor promedio ({amp_avg_config1:.2f} cm) "
+                    f"más baja que la Medición 2 ({amp_avg_config2:.2f} cm), lo que sugiere una mayor reducción del temblor."
                 )
-
-                st.download_button(
-                    label="Descargar Informe Comparativo PDF",
-                    data=pdf_output_bytes.getvalue(),
-                    file_name="informe_comparativo_temblor.pdf",
-                    mime="application/pdf"
+            elif amp_avg_config2 < amp_avg_config1:
+                conclusion = (
+                    f"La Medición 2 muestra una amplitud de temblor promedio ({amp_avg_config2:.2f} cm) "
+                    f"más baja que la Medición 1 ({amp_avg_config1:.2f} cm), lo que sugiere una mayor reducción del temblor."
                 )
-                st.info("El archivo se descargará en tu carpeta de descargas predeterminada o el navegador te pedirá la ubicación.")
             else:
-                st.warning("No se pudieron comparar las mediciones. Asegúrate de que los archivos contengan datos válidos para todas las pruebas.")
+                conclusion = (
+                    f"Ambas mediciones muestran amplitudes de temblor promedio muy similares ({amp_avg_config1:.2f} cm). "
+                )
+
+            st.subheader("Resultados Medición 1")
+            st.dataframe(df_resultados_config1)
+
+            st.subheader("Resultados Medición 2")
+            st.dataframe(df_resultados_config2)
+
+            st.subheader("Comparación Gráfica de Amplitud por Ventana")
+            nombres_test = ["Reposo", "Postural", "Acción"] # Ensure 'Postural' is handled
+
+            pdf_figs = [] # List to store figure paths for PDF
+
+            for test in nombres_test:
+                archivo1 = config1_archivos.get(test)
+                archivo2 = config2_archivos.get(test)
+
+                if archivo1 is not None and archivo2 is not None:
+                    archivo1.seek(0)
+                    archivo2.seek(0)
+                    df1 = pd.read_csv(archivo1, encoding='latin1')
+                    df2 = pd.read_csv(archivo2, encoding='latin1')
+
+                    df1_promedio, df1_ventanas = analizar_temblor_por_ventanas_resultante(df1, fs=100)
+                    df2_promedio, df2_ventanas = analizar_temblor_por_ventanas_resultante(df2, fs=100)
+
+                    if not df1_ventanas.empty and not df2_ventanas.empty:
+                        fig, ax = plt.subplots(figsize=(10, 5))
+
+                        df1_ventanas["Tiempo (segundos)"] = df1_ventanas["Ventana"] * VENTANA_DURACION_SEG
+                        df2_ventanas["Tiempo (segundos)"] = df2_ventanas["Ventana"] * VENTANA_DURACION_SEG
+
+                        ax.plot(df1_ventanas["Tiempo (segundos)"], df1_ventanas["Amplitud Temblor (cm)"], label="Medición 1", color="blue")
+                        ax.plot(df2_ventanas["Tiempo (segundos)"], df2_ventanas["Amplitud Temblor (cm)"], label="Medición 2", color="orange")
+                        ax.set_title(f"Amplitud por Ventana - {test}")
+                        ax.set_xlabel("Tiempo (segundos)")
+                        ax.set_ylabel("Amplitud (cm)")
+                        ax.legend()
+                        ax.grid(True)
+                        st.pyplot(fig)
+                        plt.close(fig) # Close the figure to free up memory
+                    else:
+                        st.warning(f"No hay suficientes datos de ventanas para graficar el test: {test}")
+                else:
+                    st.info(f"Archivos no cargados para el test {test} en ambas mediciones. Se omitirá este gráfico.")
+            
+            st.subheader("Conclusión del Análisis Comparativo")
+            st.write(conclusion)
+
+            # Combine results for PDF if necessary or modify generate_pdf to handle two DFs
+            # For now, let's create a combined DataFrame for simpler PDF passing
+            combined_df_for_pdf = pd.DataFrame()
+            if not df_resultados_config1.empty:
+                df_resultados_config1['Measurement'] = 1
+                combined_df_for_pdf = pd.concat([combined_df_for_pdf, df_resultados_config1])
+            if not df_resultados_config2.empty:
+                df_resultados_config2['Measurement'] = 2
+                combined_df_for_pdf = pd.concat([combined_df_for_pdf, df_resultados_config2])
+            
+            # Generate PDF for comparison
+            if not combined_df_for_pdf.empty:
+                generar_pdf(
+                    datos_paciente_dict=datos_personales,
+                    df_resultados=combined_df_for_pdf,
+                    nombre_archivo="informe_comparativo_temblor.pdf",
+                    diagnostico=conclusion, # Pass the conclusion as the diagnosis for comparative report
+                    fig=None, # In comparison mode, figures are generated and added within the loop, or re-generated.
+                    comparison_mode=True,
+                    config1_params=parametros_config1,
+                    config2_params=parametros_config2
+                )
+
+                with open("informe_comparativo_temblor.pdf", "rb") as f:
+                    st.download_button(
+                        label="Descargar Informe PDF",
+                        data=f.read(),
+                        file_name="informe_comparativo_temblor.pdf",
+                        mime="application/pdf"
+                    )
+                st.info("El archivo se descargará en tu carpeta de descargas predeterminada o el navegador te pedirá la ubicación, dependiendo de tu configuración.")
+            else:
+                st.warning("No hay datos suficientes para generar un informe comparativo PDF.")
 
 
-# --- Opción 3: Predicción de Temblor ---
 elif opcion == "3️⃣ Predicción de Temblor":
+
     st.title("🔮 Predicción de Temblor")
     st.markdown("### Cargar archivos CSV para la Predicción")
 
-    prediccion_reposo_file = st.file_uploader("Arrastrar archivo aquí", type="csv", key="prediccion_reposo") # Cambiado el label
-    prediccion_postural_file = st.file_uploader("Arrastrar archivo aquí", type="csv", key="prediccion_postural") # Cambiado el label
-    prediccion_accion_file = st.file_uploader("Arrastrar archivo aquí", type="csv", key="prediccion_accion") # Cambiado el label
+    prediccion_reposo_file = st.file_uploader("Archivo de REPOSO para Predicción", type="csv", key="prediccion_reposo")
+    prediccion_postural_file = st.file_uploader("Archivo de POSTURAL para Predicción", type="csv", key="prediccion_postural")
+    prediccion_accion_file = st.file_uploader("Archivo de ACCION para Predicción", type="csv", key="prediccion_accion")
 
-    # Estilos CSS personalizados para los uploaders en esta sección
     st.markdown("""
         <style>
-        /* Oculta el texto 'Limit 200MB per file • CSV' */
-        div[data-testid="stFileUploaderDropzoneInstructions"] p:nth-child(2) {
+        div[data-testid="stFileUploaderDropzoneInstructions"] span {
             display: none !important;
         }
-        /* Alinea el "Arrastrar archivo aquí" a la derecha, ya que ahora es el label */
-        div[data-testid="stFileUploaderDropzoneInstructions"] {
-            text-align: right;
-        }
-
-        /* Oculta el botón por defecto de Streamlit */
-        div[data-testid="stFileUploader"] button[kind="secondary"] {
-            visibility: hidden;
-        }
-        /* Muestra y estiliza el botón personalizado */
-        div[data-testid="stFileUploader"] button[kind="secondary"]::before {
-            float: right;
-            margin-right: 0;
-            content: "Cargar archivos";
-            visibility: visible;
-            display: inline-block;
-            background-color: #FF5722;
-            color: white;
-            padding: 0.5em 1em;
-            border-radius: 6px;
-            border: 2px solid white;
-            cursor: pointer;
-        }
-        /* Ajusta la alineación del contenedor del uploader para que el botón esté a la derecha */
-        div[data-testid="stFileUploader"] > div:first-child {
-            display: flex;
-            flex-direction: column;
-            align-items: flex-end;
-        }
-        div[data-testid="stFileUploader"] > div {
-            display: flex;
-            flex-direction: column;
-            align-items: flex-end;
+        div[data-testid="stFileUploaderDropzoneInstructions"]::before {
+            content: "Arrastrar archivo aquí";
+            font-weight: bold;
+            font-size: 16px;
+            color: #444;
+            display: block;
+            margin-bottom: 0.5rem;
         }
         </style>
     """, unsafe_allow_html=True)
 
-
-    prediccion_files_raw = {
-        "Reposo": prediccion_reposo_file,
-        "Postural": prediccion_postural_file,
-        "Acción": prediccion_accion_file
-    }
-
     if st.button("Realizar Predicción"):
-        avg_tremor_metrics = {}
-        patient_data = {} # Para almacenar los datos del paciente para el modelo
-        figures_for_report = [] # Para el gráfico opcional
+        prediccion_files_correctas = {
+            "Reposo": prediccion_reposo_file,
+            "Postural": prediccion_postural_file,
+            "Acción": prediccion_accion_file
+        }
 
-        # Cargar y limpiar archivos, extraer datos del paciente
-        first_valid_df_raw = None
-        for test_type, file_obj in prediccion_files_raw.items():
-            if file_obj is not None:
-                raw_df = load_csv(file_obj)
-                if not raw_df.empty:
-                    # Extraer datos del paciente una sola vez del primer archivo válido
-                    if not patient_data:
-                        patient_data = extract_patient_data(raw_df)
+        any_file_uploaded = any(file is not None for file in prediccion_files_correctas.values())
 
-                    # Limpiar datos del sensor
-                    cleaned_df = clean_sensor_data(raw_df)
-                    if cleaned_df.empty:
-                        st.warning(f"No hay datos de sensor válidos en el archivo de {test_type} después de la limpieza. Saltando análisis de {test_type}.")
-                        avg_tremor_metrics[test_type] = {
-                            'Frecuencia Dominante (Hz)': np.nan, 'RMS (m/s2)': np.nan, 'Amplitud Temblor (cm)': np.nan
-                        }
-                        continue
+        if not any_file_uploaded:
+            st.warning("Por favor, sube al menos un archivo CSV para realizar la predicción.")
+        else:
+            avg_tremor_metrics = {}
+            datos_paciente = {} # Initialize datos_paciente here
 
-                    # Analizar temblor
-                    df_promedio, df_ventanas = analyze_tremor_windows(cleaned_df)
+            # Extract patient data from the first successfully loaded file
+            first_df_loaded = None
+            for test_type, uploaded_file in prediccion_files_correctas.items():
+                if uploaded_file is not None:
+                    uploaded_file.seek(0)
+                    first_df_loaded = pd.read_csv(uploaded_file, encoding='latin1')
+                    datos_paciente = extraer_datos_paciente(first_df_loaded)
+                    break # Get patient data from the first file and then proceed
+
+            if not datos_paciente: # If no file was successfully loaded to get patient data
+                st.error("No se pudo extraer información del paciente. Asegúrate de que los archivos contengan datos válidos.")
+                st.stop() # Stop execution if no patient data can be extracted
+
+            for test_type, uploaded_file in prediccion_files_correctas.items():
+                if uploaded_file is not None:
+                    uploaded_file.seek(0)
+                    df_current_test = pd.read_csv(uploaded_file, encoding='latin1')
+
+                    df_promedio, _ = analizar_temblor_por_ventanas_resultante(df_current_test, fs=100)
 
                     if not df_promedio.empty:
                         avg_tremor_metrics[test_type] = df_promedio.iloc[0].to_dict()
                     else:
                         st.warning(f"No se pudieron calcular métricas de temblor para {test_type}. Se usarán NaN.")
                         avg_tremor_metrics[test_type] = {
-                            'Frecuencia Dominante (Hz)': np.nan, 'RMS (m/s2)': np.nan, 'Amplitud Temblor (cm)': np.nan
+                            'Frecuencia Dominante (Hz)': np.nan,
+                            'RMS (m/s2)': np.nan,
+                            'Amplitud Temblor (cm)': np.nan
                         }
 
-                    # Preparar datos para el gráfico de amplitud por ventana
-                    if not df_ventanas.empty:
-                        df_ventanas_copy = df_ventanas.copy()
-                        df_ventanas_copy["Test"] = test_type
-                        figures_for_report.append((test_type, df_ventanas_copy)) # Almacenar para graficar
+            if not avg_tremor_metrics:
+                st.error("No se pudo procesar ningún archivo cargado para la predicción. Asegúrate de que los archivos contengan datos válidos.")
+            else:
+                st.subheader("Datos de Temblor Calculados para la Predicción:")
+                df_metrics_display = pd.DataFrame.from_dict(avg_tremor_metrics, orient='index')
+                df_metrics_display.index.name = "Test"
+                st.dataframe(df_metrics_display)
 
-        if not avg_tremor_metrics or all(pd.isna(v['Frecuencia Dominante (Hz)']) for v in avg_tremor_metrics.values()):
-            st.error("No se pudo procesar ningún archivo cargado para la predicción o los datos son insuficientes. Asegúrate de que los archivos contengan datos válidos.")
-        else:
-            st.subheader("Datos de Temblor Calculados para la Predicción:")
-            df_metrics_display = pd.DataFrame.from_dict(avg_tremor_metrics, orient='index')
-            df_metrics_display.index.name = "Test"
-            st.dataframe(df_metrics_display)
+                df_for_prediction = prepare_data_for_prediction(datos_paciente, avg_tremor_metrics)
 
-            # Preparar el diccionario de características para el modelo
-            features_for_model = {}
-            # Datos demográficos del paciente
-            features_for_model['edad'] = patient_data.get('edad', np.nan)
-            features_for_model['sexo'] = patient_data.get('sexo', 'no especificado').lower()
-            features_for_model['mano_medida'] = patient_data.get('mano_medida', 'no especificada').lower()
-            features_for_model['dedo_medido'] = patient_data.get('dedo_medido', 'no especificado').lower()
+                st.subheader("DataFrame preparado para el Modelo de Predicción:")
+                st.dataframe(df_for_prediction)
 
-            # Métricas de temblor por tipo de prueba
-            feature_name_map = {"Reposo": "Reposo", "Postural": "Postural", "Acción": "Accion"}
-            for original_test_type, model_feature_prefix in feature_name_map.items():
-                metrics = avg_tremor_metrics.get(original_test_type, {})
-                features_for_model[f'Frec_{model_feature_prefix}'] = metrics.get('Frecuencia Dominante (Hz)', np.nan)
-                features_for_model[f'RMS_{model_feature_prefix}'] = metrics.get('RMS (m/s2)', np.nan)
-                features_for_model[f'Amp_{model_feature_prefix}'] = metrics.get('Amplitud Temblor (cm)', np.nan)
+                model_filename = 'tremor_prediction_model_V2.joblib'
 
-            st.subheader("Características preparadas para el Modelo de Predicción:")
-            st.json(features_for_model)
-            st.write("Claves presentes:", list(features_for_model.keys()))
+                try:
+                    modelo_cargado = load_tremor_model(model_filename)
+                    prediction = modelo_cargado.predict(df_for_prediction)
 
-            # Cargar y usar el modelo de predicción
-            model = load_prediction_model()
-            if model:
-                prediction, probabilities = make_tremor_prediction(model, features_for_model, EXPECTED_FEATURES_FOR_MODEL)
-
-                if prediction is not None:
                     st.subheader("Resultado de la Predicción:")
-                    st.success(f"La predicción del modelo es: **{prediction}**")
+                    st.success(f"La predicción del modelo es: **{prediction[0]}**")
 
-                    if probabilities is not None:
+                    if hasattr(modelo_cargado, 'predict_proba'):
+                        probabilities = modelo_cargado.predict_proba(df_for_prediction)
                         st.write("Probabilidades por clase:")
-                        if hasattr(model, 'classes_'):
-                            for i, class_label in enumerate(model.classes_):
+                        if hasattr(modelo_cargado, 'classes_'):
+                            for i, class_label in enumerate(modelo_cargado.classes_):
                                 st.write(f"- **{class_label}**: {probabilities[0][i]*100:.2f}%")
                         else:
-                            st.info("El modelo no tiene el atributo 'classes_'. No se pueden mostrar las etiquetas de clase para las probabilidades.")
-                else:
-                    st.error("No se pudo obtener una predicción del modelo.")
+                            st.info("El modelo no tiene el atributo 'classes_'. No se pueden mostrar las etiquetas de clase.")
 
-            # Generar el gráfico de amplitud por ventana para la predicción
-            if figures_for_report:
-                # Encontrar la longitud mínima para graficar
-                min_plot_len = float('inf')
-                for _, df_win in figures_for_report:
-                    if len(df_win) < min_plot_len:
-                        min_plot_len = len(df_win)
+                except FileNotFoundError as e:
+                    st.error(f"Error: {e}")
+                    st.error("Asegúrate de que el archivo del modelo esté en la misma carpeta que este script.")
+                except Exception as e:
+                    st.error(f"Ocurrió un error al usar el modelo: {e}")
+                    st.error("Verifica que el DataFrame `df_for_prediction` coincida con lo que espera el modelo.")
 
-                plot_figs = []
-                st.subheader("Amplitud de Temblor por Ventana (Archivos de Predicción)")
-                for test_type, df_plot in figures_for_report:
+                # Optional graph generation
+                all_ventanas_for_plot = []
+                current_min_ventanas = float('inf')
+
+                for test_type, uploaded_file in prediccion_files_correctas.items():
+                    if uploaded_file is not None:
+                        uploaded_file.seek(0)
+                        df_temp = pd.read_csv(uploaded_file, encoding='latin1')
+                        _, df_ventanas_temp = analizar_temblor_por_ventanas_resultante(df_temp, fs=100)
+
+                        if not df_ventanas_temp.empty:
+                            df_ventanas_temp_copy = df_ventanas_temp.copy()
+                            df_ventanas_temp_copy["Test"] = test_type
+                            all_ventanas_for_plot.append(df_ventanas_temp_copy)
+
+                            if len(df_ventanas_temp_copy) < current_min_ventanas:
+                                current_min_ventanas = len(df_ventanas_temp_copy)
+
+                if all_ventanas_for_plot:
                     fig, ax = plt.subplots(figsize=(10, 6))
-                    df_to_plot = df_plot.iloc[:min_plot_len].copy()
-                    df_to_plot["Tiempo (segundos)"] = df_to_plot["Ventana"] * VENTANA_DURACION_SEG * (1 - SOLAPAMIENTO_VENTANA)
-                    ax.plot(df_to_plot["Tiempo (segundos)"], df_to_plot["Amplitud Temblor (cm)"], label=f"{test_type}")
-                    ax.set_title(f"Amplitud por Ventana - {test_type}")
+                    for df_plot in all_ventanas_for_plot:
+                        test_name = df_plot["Test"].iloc[0]
+                        if current_min_ventanas != float('inf') and len(df_plot) > current_min_ventanas:
+                            df_to_plot = df_plot.iloc[:current_min_ventanas].copy()
+                        else:
+                            df_to_plot = df_plot.copy()
+
+                        df_to_plot["Tiempo (segundos)"] = df_to_plot["Ventana"] * VENTANA_DURACION_SEG
+                        ax.plot(df_to_plot["Tiempo (segundos)"], df_to_plot["Amplitud Temblor (cm)"], label=f"{test_name}")
+
+                    ax.set_title("Amplitud de Temblor por Ventana de Tiempo (Archivos de Predicción)")
                     ax.set_xlabel("Tiempo (segundos)")
                     ax.set_ylabel("Amplitud (cm)")
                     ax.legend()
                     ax.grid(True)
                     st.pyplot(fig)
-                    plot_figs.append(fig) # Añadir la figura generada para el informe PDF
-
-                # Generar PDF de predicción (podría ser una función diferente en pdf_generation)
-                pdf_output_bytes = generate_tremor_report_pdf(
-                    patient_data,
-                    results_df=df_metrics_display.reset_index().rename(columns={'index': 'Test'}), # Asegurar formato de tabla
-                    conclusion_text=f"Predicción del Modelo: {prediction}",
-                    figures=plot_figs,
-                    filename="informe_prediccion_temblor.pdf"
-                )
-                st.download_button("📄 Descargar informe de predicción PDF", pdf_output_bytes.getvalue(), file_name="informe_prediccion_temblor.pdf", mime="application/pdf")
-                st.info("El archivo se descargará en tu carpeta de descargas predeterminada o el navegador te pedirá la ubicación.")
-            else:
-                st.warning("No hay suficientes datos de ventanas para graficar los archivos de predicción.")
+                    plt.close(fig)
+                else:
+                    st.warning("No hay suficientes datos de ventanas para graficar los archivos de predicción.")
