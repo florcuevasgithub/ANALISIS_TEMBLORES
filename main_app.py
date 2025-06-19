@@ -12,7 +12,7 @@ from io import BytesIO
 from config import VENTANA_DURACION_SEG
 from data_processing import extraer_datos_paciente, diagnosticar
 from signal_analysis import analizar_temblor_por_ventanas_resultante
-from pdf_generation import generar_pdf
+from pdf_generation import generar_pdf # Asegúrate de que esta importación sea correcta
 from ml_model import load_tremor_model, prepare_data_for_prediction
 
 
@@ -114,7 +114,7 @@ if opcion == "1️⃣ Análisis de una medición":
     datos_paciente_para_pdf = {}
     ventanas_para_grafico = []
     min_ventanas_count = float('inf')
-    fig_single_analysis = None # Cambiado el nombre de la variable para evitar conflictos
+    fig_single_analysis = None 
 
     if st.button("Iniciar análisis"):
         mediciones_tests = {}
@@ -155,7 +155,7 @@ if opcion == "1️⃣ Análisis de una medición":
 
 
             if ventanas_para_grafico:
-                fig_single_analysis, ax = plt.subplots(figsize=(10, 6)) # Asigna a la variable específica
+                fig_single_analysis, ax = plt.subplots(figsize=(10, 6)) 
                 for df in ventanas_para_grafico:
                     test_name = df["Test"].iloc[0]
                     if min_ventanas_count != float('inf') and len(df) > min_ventanas_count:
@@ -171,7 +171,8 @@ if opcion == "1️⃣ Análisis de una medición":
                 ax.set_ylabel("Amplitud (cm)")
                 ax.legend()
                 ax.grid(True)
-                st.pyplot(fig_single_analysis) # Muestra la variable específica
+                st.pyplot(fig_single_analysis) 
+                plt.close(fig_single_analysis) # Cierra la figura aquí
             else:
                 st.warning("No se generaron datos de ventanas para el gráfico.")
 
@@ -182,15 +183,16 @@ if opcion == "1️⃣ Análisis de una medición":
                 st.subheader("Resultados del Análisis de Temblor")
                 st.dataframe(df_resultados_final.set_index('Test'))
 
+                # Paso la figura como una lista, aunque sea una sola para coherencia
                 generar_pdf(
                     datos_paciente_para_pdf,
                     df_resultados_final,
                     nombre_archivo="informe_temblor.pdf",
                     diagnostico=diagnostico_auto,
-                    figs=fig_single_analysis, # Pasa la variable específica (puede ser None o una figura)
+                    figs=[fig_single_analysis] if fig_single_analysis else None, # Pasa la figura en una lista
                     comparison_mode=False,
-                    config1_params=None, # No aplicable para análisis único
-                    config2_params=None # No aplicable para análisis único
+                    config1_params=None, 
+                    config2_params=None 
                 )
 
                 with open("informe_temblor.pdf", "rb") as f:
@@ -234,6 +236,7 @@ elif opcion == "2️⃣ Comparar dos mediciones":
 
     def analizar_configuracion_comparacion(archivos, fs=100):
         resultados = []
+        ventanas_datos = {} # Para almacenar los datos de ventanas para cada test
         for test, archivo in archivos.items():
             if archivo is not None:
                 archivo.seek(0)
@@ -251,10 +254,11 @@ elif opcion == "2️⃣ Comparar dos mediciones":
                             'RMS (m/s2)': round(rms, 4),
                             'Amplitud Temblor (cm)': round(amp, 2)
                         })
+                    ventanas_datos[test] = df_ventana # Almacenar df_ventana
             else:
-                st.warning(f"Archivo de {test} no cargado para esta configuración. Se omitirá del análisis.")
+                st.info(f"Archivo de {test} no cargado para esta configuración. Se omitirá del análisis.")
 
-        return pd.DataFrame(resultados)
+        return pd.DataFrame(resultados), ventanas_datos
 
     if st.button("Comparar Mediciones"):
         any_files_uploaded_config1 = any(f is not None for f in config1_archivos.values())
@@ -263,38 +267,36 @@ elif opcion == "2️⃣ Comparar dos mediciones":
         if not any_files_uploaded_config1 and not any_files_uploaded_config2:
             st.warning("Por favor, cargue al menos un archivo para cada medición para iniciar la comparación.")
         else:
-            # Read the first available file from each configuration to extract metadata
-            df_config1_meta = None
+            # Extraer datos del paciente y configuración de cada set de archivos
+            datos_personales_comunes = {}
+            parametros_config1 = {}
+            parametros_config2 = {}
+
+            # Intentar extraer datos del paciente del primer archivo disponible de la Medición 1
+            primer_df_config1 = None
             for f in config1_archivos.values():
                 if f is not None:
                     f.seek(0)
-                    df_config1_meta = pd.read_csv(f, encoding='latin1')
+                    primer_df_config1 = pd.read_csv(f, encoding='latin1')
+                    parametros_config1 = extraer_datos_paciente(primer_df_config1)
                     break
-
-            df_config2_meta = None
+            
+            # Intentar extraer datos del paciente del primer archivo disponible de la Medición 2
+            primer_df_config2 = None
             for f in config2_archivos.values():
                 if f is not None:
                     f.seek(0)
-                    df_config2_meta = pd.read_csv(f, encoding='latin1')
+                    primer_df_config2 = pd.read_csv(f, encoding='latin1')
+                    parametros_config2 = extraer_datos_paciente(primer_df_config2)
                     break
             
-            datos_personales = {}
-            if df_config1_meta is not None:
-                datos_personales = extraer_datos_paciente(df_config1_meta)
-            elif df_config2_meta is not None:
-                datos_personales = extraer_datos_paciente(df_config2_meta)
-
-            parametros_config1 = {}
-            if df_config1_meta is not None:
-                parametros_config1 = extraer_datos_paciente(df_config1_meta)
-
-            parametros_config2 = {}
-            if df_config2_meta is not None:
-                parametros_config2 = extraer_datos_paciente(df_config2_meta)
-
-
-            df_resultados_config1 = analizar_configuracion_comparacion(config1_archivos)
-            df_resultados_config2 = analizar_configuracion_comparacion(config2_archivos)
+            # Combinar datos personales, priorizando config1 si ambos están presentes
+            datos_personales_comunes.update(parametros_config1)
+            datos_personales_comunes.update({k: v for k, v in parametros_config2.items() if k not in datos_personales_comunes or not datos_personales_comunes[k]})
+            
+            # Analizar las configuraciones para obtener resultados y datos de ventana
+            df_resultados_config1, ventanas_config1 = analizar_configuracion_comparacion(config1_archivos)
+            df_resultados_config2, ventanas_config2 = analizar_configuracion_comparacion(config2_archivos)
 
             amp_avg_config1 = df_resultados_config1['Amplitud Temblor (cm)'].mean() if not df_resultados_config1.empty else 0
             amp_avg_config2 = df_resultados_config2['Amplitud Temblor (cm)'].mean() if not df_resultados_config2.empty else 0
@@ -331,38 +333,32 @@ elif opcion == "2️⃣ Comparar dos mediciones":
             figs_comparison = []
 
             for test in nombres_test:
-                archivo1 = config1_archivos.get(test)
-                archivo2 = config2_archivos.get(test)
+                df1_ventanas = ventanas_config1.get(test)
+                df2_ventanas = ventanas_config2.get(test)
 
-                if archivo1 is not None and archivo2 is not None:
-                    archivo1.seek(0)
-                    archivo2.seek(0)
-                    df1 = pd.read_csv(archivo1, encoding='latin1')
-                    df2 = pd.read_csv(archivo2, encoding='latin1')
+                if df1_ventanas is not None and not df1_ventanas.empty and \
+                   df2_ventanas is not None and not df2_ventanas.empty:
+                    
+                    fig, ax = plt.subplots(figsize=(10, 5))
 
-                    df1_promedio, df1_ventanas = analizar_temblor_por_ventanas_resultante(df1, fs=100)
-                    df2_promedio, df2_ventanas = analizar_temblor_por_ventanas_resultante(df2, fs=100)
+                    df1_ventanas_copy = df1_ventanas.copy()
+                    df2_ventanas_copy = df2_ventanas.copy()
 
-                    if not df1_ventanas.empty and not df2_ventanas.empty:
-                        fig, ax = plt.subplots(figsize=(10, 5))
+                    df1_ventanas_copy["Tiempo (segundos)"] = df1_ventanas_copy["Ventana"] * VENTANA_DURACION_SEG
+                    df2_ventanas_copy["Tiempo (segundos)"] = df2_ventanas_copy["Ventana"] * VENTANA_DURACION_SEG
 
-                        df1_ventanas["Tiempo (segundos)"] = df1_ventanas["Ventana"] * VENTANA_DURACION_SEG
-                        df2_ventanas["Tiempo (segundos)"] = df2_ventanas["Ventana"] * VENTANA_DURACION_SEG
-
-                        ax.plot(df1_ventanas["Tiempo (segundos)"], df1_ventanas["Amplitud Temblor (cm)"], label="Medición 1", color="blue")
-                        ax.plot(df2_ventanas["Tiempo (segundos)"], df2_ventanas["Amplitud Temblor (cm)"], label="Medición 2", color="orange")
-                        ax.set_title(f"Amplitud por Ventana - {test}")
-                        ax.set_xlabel("Tiempo (segundos)")
-                        ax.set_ylabel("Amplitud (cm)")
-                        ax.legend()
-                        ax.grid(True)
-                        st.pyplot(fig) # Muestra en Streamlit
-                        figs_comparison.append(fig) # Añade la figura a la lista para el PDF
-                        plt.close(fig) # Cierra la figura para liberar memoria
-                    else:
-                        st.warning(f"No hay suficientes datos de ventanas para graficar el test: {test}")
+                    ax.plot(df1_ventanas_copy["Tiempo (segundos)"], df1_ventanas_copy["Amplitud Temblor (cm)"], label="Medición 1", color="blue")
+                    ax.plot(df2_ventanas_copy["Tiempo (segundos)"], df2_ventanas_copy["Amplitud Temblor (cm)"], label="Medición 2", color="orange")
+                    ax.set_title(f"Amplitud por Ventana - {test}")
+                    ax.set_xlabel("Tiempo (segundos)")
+                    ax.set_ylabel("Amplitud (cm)")
+                    ax.legend()
+                    ax.grid(True)
+                    st.pyplot(fig) # Muestra en Streamlit
+                    figs_comparison.append(fig) # Añade la figura a la lista para el PDF
+                    # NO CERRAR LA FIGURA AQUI. Se cierra después de que se usa para el PDF
                 else:
-                    st.info(f"Archivos no cargados para el test {test} en ambas mediciones. Se omitirá este gráfico.")
+                    st.info(f"No hay suficientes datos de ventanas para graficar el test: {test}")
             
             st.subheader("Conclusión del Análisis Comparativo")
             st.write(conclusion)
@@ -377,15 +373,19 @@ elif opcion == "2️⃣ Comparar dos mediciones":
             
             if not combined_df_for_pdf.empty:
                 generar_pdf(
-                    datos_paciente_dict=datos_personales,
+                    datos_paciente_dict=datos_personales_comunes, # Usar los datos personales combinados
                     df_resultados=combined_df_for_pdf,
                     nombre_archivo="informe_comparativo_temblor.pdf",
                     diagnostico=conclusion,
                     figs=figs_comparison, # Pasa la lista de figuras
                     comparison_mode=True,
-                    config1_params=parametros_config1,
-                    config2_params=parametros_config2
+                    config1_params=parametros_config1, # Pasar los parámetros de config 1
+                    config2_params=parametros_config2  # Pasar los parámetros de config 2
                 )
+                
+                # Cierra todas las figuras DESPUÉS de que se hayan usado para generar el PDF
+                for fig_to_close in figs_comparison:
+                    plt.close(fig_to_close)
 
                 with open("informe_comparativo_temblor.pdf", "rb") as f:
                     st.download_button(
@@ -437,7 +437,7 @@ elif opcion == "3️⃣ Predicción de Temblor":
             st.warning("Por favor, sube al menos un archivo CSV para realizar la predicción.")
         else:
             avg_tremor_metrics = {}
-            datos_paciente = {} # Initialize datos_paciente here
+            datos_paciente = {} 
 
             # Extract patient data from the first successfully loaded file
             first_df_loaded = None
@@ -445,19 +445,22 @@ elif opcion == "3️⃣ Predicción de Temblor":
                 if uploaded_file is not None:
                     uploaded_file.seek(0)
                     first_df_loaded = pd.read_csv(uploaded_file, encoding='latin1')
-                    datos_paciente = extraer_datos_paciente(first_df_loaded)
-                    break # Get patient data from the first file and then proceed
+                    datos_paciente = extraer_datos_paciente(first_df_loaded) # Extrae todo, incluyendo Mano y Dedo
+                    break 
 
-            if not datos_paciente: # If no file was successfully loaded to get patient data
+            if not datos_paciente: 
                 st.error("No se pudo extraer información del paciente. Asegúrate de que los archivos contengan datos válidos.")
-                st.stop() # Stop execution if no patient data can be extracted
+                st.stop() 
+
+            all_ventanas_for_plot = [] # Declarar aquí para asegurar que siempre esté disponible
+            current_min_ventanas = float('inf') # Declarar aquí
 
             for test_type, uploaded_file in prediccion_files_correctas.items():
                 if uploaded_file is not None:
                     uploaded_file.seek(0)
                     df_current_test = pd.read_csv(uploaded_file, encoding='latin1')
 
-                    df_promedio, _ = analizar_temblor_por_ventanas_resultante(df_current_test, fs=100)
+                    df_promedio, df_ventanas_temp = analizar_temblor_por_ventanas_resultante(df_current_test, fs=100)
 
                     if not df_promedio.empty:
                         avg_tremor_metrics[test_type] = df_promedio.iloc[0].to_dict()
@@ -468,6 +471,15 @@ elif opcion == "3️⃣ Predicción de Temblor":
                             'RMS (m/s2)': np.nan,
                             'Amplitud Temblor (cm)': np.nan
                         }
+                    
+                    # Recopilar datos de ventanas para gráficos de predicción
+                    if not df_ventanas_temp.empty:
+                        df_ventanas_temp_copy = df_ventanas_temp.copy()
+                        df_ventanas_temp_copy["Test"] = test_type
+                        all_ventanas_for_plot.append(df_ventanas_temp_copy)
+                        if len(df_ventanas_temp_copy) < current_min_ventanas:
+                            current_min_ventanas = len(df_ventanas_temp_copy)
+
 
             if not avg_tremor_metrics:
                 st.error("No se pudo procesar ningún archivo cargado para la predicción. Asegúrate de que los archivos contengan datos válidos.")
@@ -520,23 +532,7 @@ elif opcion == "3️⃣ Predicción de Temblor":
 
 
                 # Optional graph generation for prediction
-                all_ventanas_for_plot = []
-                current_min_ventanas = float('inf')
-                figs_prediction = [] # Lista para las figuras de predicción para el PDF
-
-                for test_type, uploaded_file in prediccion_files_correctas.items():
-                    if uploaded_file is not None:
-                        uploaded_file.seek(0)
-                        df_temp = pd.read_csv(uploaded_file, encoding='latin1')
-                        _, df_ventanas_temp = analizar_temblor_por_ventanas_resultante(df_temp, fs=100)
-
-                        if not df_ventanas_temp.empty:
-                            df_ventanas_temp_copy = df_ventanas_temp.copy()
-                            df_ventanas_temp_copy["Test"] = test_type
-                            all_ventanas_for_plot.append(df_ventanas_temp_copy)
-
-                            if len(df_ventanas_temp_copy) < current_min_ventanas:
-                                current_min_ventanas = len(df_ventanas_temp_copy)
+                figs_prediction = [] 
 
                 if all_ventanas_for_plot:
                     fig, ax = plt.subplots(figsize=(10, 6))
@@ -557,23 +553,28 @@ elif opcion == "3️⃣ Predicción de Temblor":
                     ax.grid(True)
                     st.pyplot(fig) # Muestra en Streamlit
                     figs_prediction.append(fig) # Añade la figura a la lista para el PDF
-                    plt.close(fig)
+                    # NO CERRAR AQUI, se cierra después de generar el PDF
+
                 else:
                     st.warning("No hay suficientes datos de ventanas para graficar los archivos de predicción.")
 
                 # Generar PDF para la opción 3
-                if not df_metrics_display.empty: # Asegurarse de que hay métricas para la tabla
+                if not df_metrics_display.empty: 
                     generar_pdf(
-                        datos_paciente_dict=datos_paciente, # Información personal
+                        datos_paciente_dict=datos_paciente, # Información personal (incluye mano/dedo si extraídos)
                         df_resultados=df_metrics_display, # Cuadro comparativo de métricas calculadas
                         nombre_archivo="informe_prediccion_temblor.pdf",
                         diagnostico=prediction_result_str, # La predicción como diagnóstico/conclusión
                         figs=figs_prediction, # Las figuras generadas
-                        comparison_mode=False, # No es modo comparación
-                        config1_params=None, # No aplicable
-                        config2_params=None, # No aplicable
+                        comparison_mode=False, 
+                        config1_params=None, 
+                        config2_params=None, 
                         prediction_info=prediction_info_for_pdf # Información de la predicción
                     )
+
+                    # Cierra todas las figuras DESPUÉS de que se hayan usado para generar el PDF
+                    for fig_to_close in figs_prediction:
+                        plt.close(fig_to_close)
 
                     with open("informe_prediccion_temblor.pdf", "rb") as f:
                         st.download_button(
