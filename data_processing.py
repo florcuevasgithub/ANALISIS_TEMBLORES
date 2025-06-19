@@ -1,29 +1,17 @@
 # data_processing.py
-
 import pandas as pd
-import numpy as np
-import io
-from config import SENSOR_COLS
 
-def load_csv(uploaded_file):
+def extraer_datos_paciente(df):
     """
-    Carga un archivo CSV desde un objeto UploadedFile de Streamlit.
+    Extrae datos personales del paciente y parámetros de configuración desde un DataFrame,
+    sin modificar las columnas originales del DataFrame.
     """
-    if uploaded_file is not None:
-        uploaded_file.seek(0)  # Reset file pointer
-        return pd.read_csv(uploaded_file, encoding='latin1')
-    return pd.DataFrame() # Return empty DataFrame if no file
-
-def extract_patient_data(df):
-    """
-    Extrae datos personales y de configuración del paciente desde un DataFrame.
-    Asume que los nombres de columna son consistentes.
-    """
+    # Crear un mapeo normalizado de nombres: {columna_lower: columna_original}
     col_map = {col.lower().strip(): col for col in df.columns}
 
     datos = {
         "sexo": "No especificado",
-        "edad": np.nan, # Usar NaN para valores numéricos ausentes
+        "edad": 0,
         "mano_medida": "No especificada",
         "dedo_medido": "No especificado",
         "Nombre": None,
@@ -33,42 +21,66 @@ def extract_patient_data(df):
         "Medicacion": None,
         "Tipo": None,
         "ECP": None, "GPI": None, "NST": None, "Polaridad": None,
-        "Duracion": np.nan, "Pulso": np.nan, "Corriente": np.nan, # Usar NaN para numéricos
-        "Voltaje": np.nan, "Frecuencia": np.nan
+        "Duracion": None, "Pulso": None, "Corriente": None,
+        "Voltaje": None, "Frecuencia": None
     }
 
     if not df.empty:
-        # Extraer datos personales y de configuración
-        for key_orig, default_val in datos.items():
-            key_l = key_orig.lower()
+        # Extraer datos personales usando el mapeo
+        if "sexo" in col_map and pd.notna(df.at[0, col_map["sexo"]]):
+            datos["sexo"] = str(df.at[0, col_map["sexo"]]).strip()
+
+        if "edad" in col_map and pd.notna(df.at[0, col_map["edad"]]):
+            try:
+                datos["edad"] = int(float(str(df.at[0, col_map["edad"]]).replace(',', '.')))
+            except (ValueError, TypeError):
+                datos["edad"] = 0 # Keep as 0 or None if conversion fails
+
+        if "mano" in col_map and pd.notna(df.at[0, col_map["mano"]]):
+            datos["mano_medida"] = str(df.at[0, col_map["mano"]]).strip()
+
+        if "dedo" in col_map and pd.notna(df.at[0, col_map["dedo"]]):
+            datos["dedo_medido"] = str(df.at[0, col_map["dedo"]]).strip()
+
+        # Extraer otros metadatos generales
+        for key in ["Nombre", "Apellido", "Diagnostico", "Antecedente", "Medicacion", "Tipo"]:
+            key_l = key.lower()
             if key_l in col_map and pd.notna(df.at[0, col_map[key_l]]):
-                val = str(df.at[0, col_map[key_l]]).strip().replace(',', '.')
+                datos[key] = str(df.at[0, col_map[key_l]])
+
+        # Extraer campos de estimulación/configuración
+        for key in ["ECP", "GPI", "NST", "Polaridad", "Duracion", "Pulso", "Corriente", "Voltaje", "Frecuencia"]:
+            key_l = key.lower()
+            if key_l in col_map and pd.notna(df.at[0, col_map[key_l]]):
+                val = str(df.at[0, col_map[key_l]]).replace(',', '.')
                 try:
-                    if key_orig in ["edad", "Duracion", "Pulso", "Corriente", "Voltaje", "Frecuencia"]:
-                        datos[key_orig] = float(val)
+                    if key in ["Duracion", "Pulso", "Corriente", "Voltaje", "Frecuencia"]:
+                        datos[key] = float(val)
                     else:
-                        datos[key_orig] = val
+                        datos[key] = val
                 except ValueError:
-                    datos[key_orig] = val # Keep as text if not convertible
+                    datos[key] = val  # Leave as text if not convertible
+
     return datos
 
-def clean_sensor_data(df):
+def diagnosticar(df):
     """
-    Limpia y valida las columnas de datos del sensor.
-    Convierte a numérico y elimina filas donde TODOS los datos del sensor son NaN.
+    Realiza un diagnóstico de temblor basado en los resultados de las pruebas.
+    Asume que df contiene las columnas 'Test', 'Amplitud Temblor (cm)', 'Frecuencia Dominante (Hz)'.
     """
-    df_cleaned = df.copy()
+    def max_amp(test):
+        fila = df[df['Test'] == test]
+        return fila['Amplitud Temblor (cm)'].max() if not fila.empty else 0
 
-    # Convertir a numérico las columnas del sensor
-    for col in SENSOR_COLS:
-        if col in df_cleaned.columns:
-            df_cleaned[col] = pd.to_numeric(df_cleaned[col], errors='coerce')
-        else:
-            # Si la columna no existe, se crea con NaN y la advertencia se manejará en la UI de Streamlit
-            df_cleaned[col] = np.nan
+    def mean_freq(test):
+        fila = df[df['Test'] == test]
+        return fila['Frecuencia Dominante (Hz)'].mean() if not fila.empty else 0
 
-    # Eliminar filas donde TODOS los datos del sensor son NaN
-    # Esto es crucial para no intentar procesar filas sin datos relevantes
-    df_cleaned = df_cleaned.dropna(subset=SENSOR_COLS, how='all')
-    df_cleaned = df_cleaned.reset_index(drop=True)
-    return df_cleaned
+    if max_amp('Reposo') > 0.3 and 3 <= mean_freq('Reposo') <= 6.5:
+        return "Probable Parkinson"
+    elif (max_amp('Postural') > 0.3 or max_amp('Acción') > 0.3) and \
+         (7.5 <= mean_freq('Postural') <= 12 or 7.5 <= mean_freq('Acción') <= 12):
+        return "Probable Temblor Esencial"
+    else:
+        return "Temblor dentro de parámetros normales"
+
