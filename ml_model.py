@@ -1,53 +1,58 @@
 # ml_model.py
-
 import joblib
 import pandas as pd
 import numpy as np
-import streamlit as st # Para mostrar st.error/st.info
 
-def load_prediction_model(model_filename='tremor_prediction_model_V2.joblib'):
-    """
-    Carga el modelo de Machine Learning pre-entrenado.
-    """
+def load_tremor_model(model_filename='tremor_prediction_model_V2.joblib'):
+    """Carga el modelo de predicción de temblor."""
     try:
-        model = joblib.load(model_filename)
-        st.info(f"Modelo '{model_filename}' cargado exitosamente.")
-        return model
+        modelo_cargado = joblib.load(model_filename)
+        return modelo_cargado
     except FileNotFoundError:
-        st.error(f"Error: El archivo del modelo '{model_filename}' no se encontró.")
-        st.error("Asegúrate de que esté en la misma carpeta que este script.")
-        return None
+        raise FileNotFoundError(f"El archivo del modelo '{model_filename}' no se encontró. Asegúrate de que esté en la misma carpeta que este script.")
     except Exception as e:
-        st.error(f"Ocurrió un error al cargar el modelo: {e}")
-        return None
+        raise Exception(f"Error al cargar el modelo: {e}")
 
-def make_tremor_prediction(model, df_features, expected_features_order):
+def prepare_data_for_prediction(datos_paciente, avg_tremor_metrics):
     """
-    Realiza una predicción utilizando el modelo cargado.
+    Prepara un DataFrame con las características necesarias para la predicción
+    del modelo de temblor.
     """
-    if model is None:
-        st.error("No se pudo realizar la predicción: el modelo no está cargado.")
-        return None, None
-
-    # Asegurarse de que el DataFrame de entrada coincida con las características esperadas por el modelo
-    # Esto es CRÍTICO para la compatibilidad del modelo
-    df_for_prediction = pd.DataFrame([df_features]).reindex(columns=expected_features_order)
-
-    # Asegurarse de que todas las columnas numéricas sean float
-    for col in df_for_prediction.columns:
-        if df_for_prediction[col].dtype == 'object': # Podría ser un string si hay mezclado
-            try:
-                df_for_prediction[col] = pd.to_numeric(df_for_prediction[col], errors='coerce')
-            except:
-                pass # Si no es numérico, déjalo como está (para categóricas)
-
+    data_for_model = {}
+    
+    # Patient Demographics
+    edad_val = datos_paciente.get('edad', np.nan)
     try:
-        prediction = model.predict(df_for_prediction)
-        probabilities = None
-        if hasattr(model, 'predict_proba'):
-            probabilities = model.predict_proba(df_for_prediction)
-        return prediction[0], probabilities
-    except Exception as e:
-        st.error(f"Ocurrió un error al usar el modelo para la predicción: {e}")
-        st.error("Verifica que el DataFrame de entrada (`df_features`) coincida en formato y columnas con lo que espera tu modelo entrenado.")
-        return None, None
+        data_for_model['edad'] = int(float(edad_val)) if pd.notna(edad_val) else np.nan
+    except (ValueError, TypeError):
+        data_for_model['edad'] = np.nan
+
+    data_for_model['sexo'] = datos_paciente.get('sexo', 'no especificado').lower()
+    data_for_model['mano_medida'] = datos_paciente.get('mano_medida', 'no especificada').lower()
+    data_for_model['dedo_medido'] = datos_paciente.get('dedo_medido', 'no especificado').lower()
+
+    # Tremor Metrics per Test Type
+    feature_name_map = {
+        "Reposo": "Reposo",
+        "Postural": "Postural",
+        "Acción": "Accion"
+    }
+
+    for original_test_type, model_feature_prefix in feature_name_map.items():
+        metrics = avg_tremor_metrics.get(original_test_type, {})
+        data_for_model[f'Frec_{model_feature_prefix}'] = metrics.get('Frecuencia Dominante (Hz)', np.nan)
+        data_for_model[f'RMS_{model_feature_prefix}'] = metrics.get('RMS (m/s2)', np.nan)
+        data_for_model[f'Amp_{model_feature_prefix}'] = metrics.get('Amplitud Temblor (cm)', np.nan)
+
+    expected_features_for_model = [
+        'edad',
+        'Frec_Reposo', 'RMS_Reposo', 'Amp_Reposo',
+        'Frec_Postural', 'RMS_Postural', 'Amp_Postural',
+        'Frec_Accion', 'RMS_Accion', 'Amp_Accion',
+        'sexo', 'mano_medida', 'dedo_medido'
+    ]
+    
+    # Create DataFrame, ensuring all expected columns are present, even if NaN
+    df_for_prediction = pd.DataFrame([data_for_model]).reindex(columns=expected_features_for_model)
+
+    return df_for_prediction
