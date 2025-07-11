@@ -8,4 +8,4 @@ La aplicación está diseñada para:
 
 -Comparar dos mediciones de temblor: Permitir a los usuarios cargar dos conjuntos de archivos CSV de "Reposo", "Postural" y "Acción", realizar el mismo análisis en ambos, comparar sus resultados numéricamente y gráficamente, y generar un informe comparativo en PDF.
 
--Predecir el tipo de temblor: Basándose en los datos de las pruebas cargadas y la información del paciente, utilizar un modelo de aprendizaje automático preentrenado para predecir el tipo de temblor (por ejemplo, Parkinsoniano, Temblor Esencial).
+-Predecir el tipo de temblor: Basándose en los resultados del analisis de los temblores y la información del paciente, creamos nuestro propio dataset y entrenamos un modelo de aprendizaje automático para predecir el tipo de temblor (por ejemplo, Parkinsoniano, Temblor Esencial).
